@@ -312,18 +312,22 @@ run FFDS_SHIM_MODE=overpct "$S" one A >/dev/null 2>&1
 assert_eq "out-of-range pct is not fatal" $? 0
 assert_match "over-100% tick keeps bytes, omits pct" "$(since "$m")" \
     'job_progress subpath=A run=[0-9]+ bytes=3000000 speed=1000 eta=0:00:01 xfr=1$'
-chmod 555 "$LOG/raw"
-m=$(mark)
-run "$S" one A 2>/dev/null
-assert_eq "raw jsonl unwritable -> 96" $? 96
-assert_match "filter_exit=4 (write failure)" "$(since "$m")" \
-    'job_end subpath=A run=[0-9]+ exit=96 .* filter_exit=4 '
-chmod 755 "$LOG/raw"
-chmod 444 "$EV"
-run "$S" one A 2>"$SCRATCH/v5.err"
-assert_eq "event log unwritable -> 90" $? 90
-assert_match "error on stderr" "$(cat "$SCRATCH/v5.err")" 'cannot append'
-chmod 644 "$EV"
+if [ "$(id -u)" -eq 0 ]; then
+    echo "  skip unwritable-log cases (root ignores file modes)"
+else
+    chmod 555 "$LOG/raw"
+    m=$(mark)
+    run "$S" one A 2>/dev/null
+    assert_eq "raw jsonl unwritable -> 96" $? 96
+    assert_match "filter_exit=4 (write failure)" "$(since "$m")" \
+        'job_end subpath=A run=[0-9]+ exit=96 .* filter_exit=4 '
+    chmod 755 "$LOG/raw"
+    chmod 444 "$EV"
+    run "$S" one A 2>"$SCRATCH/v5.err"
+    assert_eq "event log unwritable -> 90" $? 90
+    assert_match "error on stderr" "$(cat "$SCRATCH/v5.err")" 'cannot append'
+    chmod 644 "$EV"
+fi
 
 # ── V6 lifecycle ─────────────────────────────────────────────────────────────
 echo "V6 lifecycle"
