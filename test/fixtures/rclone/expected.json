@@ -1,0 +1,62 @@
+{
+ "cold": {
+  "bytes": 1048589,
+  "checks": 0,
+  "deletedDirs": 0,
+  "deletes": 0,
+  "errors": 0,
+  "speed": 0,
+  "totalBytes": 1048589,
+  "totalChecks": 0,
+  "totalTransfers": 3,
+  "transfers": 3
+ },
+ "error-nosrc": {
+  "bytes": 0,
+  "checks": 0,
+  "deletedDirs": 0,
+  "deletes": 0,
+  "errors": 1,
+  "speed": 0,
+  "totalBytes": 0,
+  "totalChecks": 0,
+  "totalTransfers": 0,
+  "transfers": 0
+ },
+ "incr": {
+  "bytes": 6,
+  "checks": 2,
+  "deletedDirs": 0,
+  "deletes": 0,
+  "errors": 0,
+  "speed": 0,
+  "totalBytes": 6,
+  "totalChecks": 2,
+  "totalTransfers": 1,
+  "transfers": 1
+ },
+ "updated": {
+  "bytes": 6,
+  "checks": 3,
+  "deletedDirs": 0,
+  "deletes": 0,
+  "errors": 0,
+  "speed": 0,
+  "totalBytes": 6,
+  "totalChecks": 3,
+  "totalTransfers": 1,
+  "transfers": 1
+ },
+ "warm": {
+  "bytes": 0,
+  "checks": 3,
+  "deletedDirs": 0,
+  "deletes": 0,
+  "errors": 0,
+  "speed": 0,
+  "totalBytes": 0,
+  "totalChecks": 3,
+  "totalTransfers": 0,
+  "transfers": 0
+ }
+}
