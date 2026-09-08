@@ -11,6 +11,7 @@ sync-host 上的夜間同步(SMB share → WEKA `DataSet`)兩個版本:
 
 | 檔案 | 用途 |
 | --- | --- |
+| [`DEPLOY.zh-tw.md`](DEPLOY.zh-tw.md) | **部署手冊(從佔位符替換開始)** |
 | [`ffds-sync-v3.sh`](ffds-sync-v3.sh) | v3 本體(部署名 `ffds_sync.sh`) |
 | [`ffds-sync-v3.zh-tw.md`](ffds-sync-v3.zh-tw.md) | v3 設計說明(帳、決策、上線順序) |
 | [`ffds-sync.service`](ffds-sync.service) / [`ffds-sync.timer`](ffds-sync.timer) | systemd oneshot + timer(timer 先不啟用) |
