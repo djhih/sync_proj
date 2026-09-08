@@ -127,6 +127,7 @@ final 也不回退到較早的 periodic snapshot。
   目的端(SMB 來源看不到 symlink 本體),兩 backend 的 symlink 樹形可能不同。
   bench 的主要比較排除非 regular file/dir。
 - **go-smb2 無 multichannel**;單連線/連線池行為要實測(`ss -t 'dport = :445'`)。
+- **rclone 版本下限 1.60**::smb: backend 需要它;另外 ≤1.55 的 stats 物件缺 `totalBytes/totalTransfers/totalChecks`,final stats 會被 telemetry 契約拒收(exit 96,原因記在 job log)。實測通過:1.60.1、1.75.1。
 - rclone exit 1–9 與 rsync 1–35 在 `runs_total{exit_code}` 同名不同義。
 - monitor 的 phase=scan/transfer 對 v4 只代表「尚未/已收到 progress」
   (stats 每 tick 都發,即使 bytes=0),last_activity 是回報新鮮度,
