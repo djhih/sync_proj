@@ -1,0 +1,23 @@
+[Unit]
+Description=Nightly FFDS sync (SMB -> WEKA)
+# Deploy target: sync-host:/etc/systemd/system/ffds-sync.timer
+#
+# Rollout: install the service first and run it by hand a few nights
+# ('systemctl start ffds-sync'); only then set OnCalendar to the slot the
+# old cron job used and 'systemctl enable --now ffds-sync.timer'.
+
+[Timer]
+# PLACEHOLDER -- replace with the current cron slot before enabling.
+OnCalendar=*-*-* 02:30:00
+# Do not catch up a missed run at boot: a sync started in the morning
+# would overlap the working day. The next scheduled night is soon enough.
+Persistent=false
+# A timer never starts the service while a previous activation is still
+# running (oneshot stays 'activating' until the batch exits), so there is
+# no overlap even if a night runs past the next trigger.
+RandomizedDelaySec=5m
+AccuracySec=1min
+Unit=ffds-sync.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,54 @@
+[Unit]
+Description=FFDS sync: SMB /mnt/src-share -> WEKA /mnt/dst-fs (one batch run)
+Documentation=file:/usr/local/ffds/ffds_sync.sh
+# Deploy target: sync-host:/etc/systemd/system/ffds-sync.service
+# Pulled in by ffds-sync.timer; 'systemctl start ffds-sync' runs one batch
+# by hand (the intended way to exercise v3 before the timer is enabled).
+#
+# If either mount is absent this unit does not start at all -- the script's
+# own exit-91 path never runs and events.log gets no record. Look at
+# 'journalctl -u ffds-sync' / the age of ffds_sync_batch_last_completed.
+RequiresMountsFor=/mnt/src-share /mnt/dst-fs
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/ffds/ffds_sync.sh all
+# Whole-night budget. On expiry systemd sends SIGTERM to the entire cgroup
+# (KillMode=control-group default): the batch traps it, emits
+# batch_abort reason=signal, kills its workers and exits 94; SIGKILL
+# follows after TimeoutStopSec. An rsync stuck in D-state on a hung mount
+# survives even SIGKILL and keeps this unit 'deactivating', which blocks
+# the next timer trigger -- that is the overlap protection, not a bug.
+TimeoutStartSec=12h
+TimeoutStopSec=2min
+# Never Restart=: re-running a multi-hour sync would push it into the day.
+# (Restart defaults to 'no'; stated here so nobody adds it.)
+Restart=no
+
+# Tuning knobs (see the script header). Keep JOBS=1 until the SMB stall
+# experiment (sync_monitor/smb-stall-report.zh-tw.md) says otherwise.
+Environment=FFDS_SYNC_JOBS=1
+Environment=FFDS_RSYNC_TIMEOUT=1800
+Environment=FFDS_PROGRESS_EVERY=15
+
+# Resource accounting: the batch gets its own cgroup, so cgroup-exporter
+# reports its CPU/IO/memory/PSI. Weights are placeholders -- lower than
+# the default 100 so a running sync yields to interactive GPU work.
+CPUWeight=30
+IOWeight=30
+
+# Sandbox. strict = whole tree read-only except the paths listed.
+#   /mnt/dst-fs            the destination (source /mnt/src-share stays read-only)
+#   /run/lock           flock files
+#   LogsDirectory       creates /var/log/ffds-sync and makes it writable
+#   PrivateTmp          mktemp -d for the per-batch rc directory; without
+#                       it /tmp is read-only under strict (script aborts
+#                       with batch_abort reason=tmp-failed)
+ProtectSystem=strict
+ReadWritePaths=/mnt/dst-fs /run/lock
+LogsDirectory=ffds-sync
+PrivateTmp=yes
+ProtectHome=true
+NoNewPrivileges=true
+
+# No [Install]: this unit is started by ffds-sync.timer or by hand.
