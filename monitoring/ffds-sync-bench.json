@@ -1,0 +1,291 @@
+{
+  "annotations": { "list": [] },
+  "description": "Engine comparison for the FFDS sync bench campaigns: v3/rsync vs v4/rclone(mount) vs v4/rclone(smb). Results panels read the per-run gauges of ffds-bench-results (:9760, immutable completed runs -- instant queries only, never rate/increase, scrape time is NOT run time). Live panels read the campaign monitor instances (:9757-9759). fixup time details, CIFS op deltas and cgroup CPU/IO live in the bench CSV/JSON, not here.",
+  "editable": true,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "type": "row", "title": "Results (completed runs, campaign $campaign)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "collapsed": false, "panels": []
+    },
+    {
+      "type": "barchart",
+      "title": "Folder sync duration - median of VALID runs",
+      "description": "Wall time of the whole sync script (engine preflight + transfer + v4 fixup + logging) per engine and scenario; median over valid reps only. This is 'how long one folder takes', not pure transfer time.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 1 },
+      "targets": [
+        {
+          "refId": "A", "instant": true, "range": false,
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "quantile by (engine, scenario) (0.5, ffds_bench_run_duration_seconds{job=\"ffds-bench-results\",campaign=\"$campaign\",engine=~\"$engine\",scenario=~\"$scenario\",subpath=~\"$subpath\"} and on (campaign, engine, scenario, rep, subpath) (ffds_bench_run_valid{job=\"ffds-bench-results\",campaign=\"$campaign\"} == 1))",
+          "legendFormat": "{{engine}} {{scenario}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "decimals": 2,
+        "color": { "mode": "palette-classic" } }, "overrides": [] },
+      "options": { "orientation": "horizontal", "showValue": "always",
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false } }
+    },
+    {
+      "type": "barchart",
+      "title": "Warm verification throughput (files/s, VALID warm runs)",
+      "description": "source regular-file count / full run duration, per valid warm run. The denominator includes the whole no-change script run (metadata comparison, v4 fixup, logging) -- this is the throughput of a complete verification pass, NOT a raw SMB scan-phase rate. Cold/incr never feed this panel.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 1 },
+      "targets": [
+        {
+          "refId": "A", "instant": true, "range": false,
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "ffds_bench_run_warm_files_per_second{job=\"ffds-bench-results\",campaign=\"$campaign\",engine=~\"$engine\",rep=~\"$rep\",subpath=~\"$subpath\"}",
+          "legendFormat": "{{engine}} rep{{rep}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 1,
+        "color": { "mode": "palette-classic" } }, "overrides": [] },
+      "options": { "orientation": "horizontal", "showValue": "always",
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false } }
+    },
+    {
+      "type": "table",
+      "title": "Completed runs",
+      "description": "Every completed run, including failed/invalid ones (valid=0 rows never enter the medians above). Started/finished are the run's own timestamps, not scrape times.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 10 },
+      "targets": [
+        { "refId": "A", "instant": true, "range": false, "format": "table",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "ffds_bench_run_duration_seconds{job=\"ffds-bench-results\",campaign=\"$campaign\",engine=~\"$engine\",scenario=~\"$scenario\",rep=~\"$rep\",subpath=~\"$subpath\"}" },
+        { "refId": "B", "instant": true, "range": false, "format": "table",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "ffds_bench_run_valid{job=\"ffds-bench-results\",campaign=\"$campaign\",engine=~\"$engine\",scenario=~\"$scenario\",rep=~\"$rep\",subpath=~\"$subpath\"}" },
+        { "refId": "C", "instant": true, "range": false, "format": "table",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "ffds_bench_run_exit_code{job=\"ffds-bench-results\",campaign=\"$campaign\",engine=~\"$engine\",scenario=~\"$scenario\",rep=~\"$rep\",subpath=~\"$subpath\"}" },
+        { "refId": "D", "instant": true, "range": false, "format": "table",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "ffds_bench_run_files_transferred{job=\"ffds-bench-results\",campaign=\"$campaign\",engine=~\"$engine\",scenario=~\"$scenario\",rep=~\"$rep\",subpath=~\"$subpath\"}" },
+        { "refId": "E", "instant": true, "range": false, "format": "table",
+          "expr": "ffds_bench_run_files_deleted{job=\"ffds-bench-results\",campaign=\"$campaign\",engine=~\"$engine\",scenario=~\"$scenario\",rep=~\"$rep\",subpath=~\"$subpath\"}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "refId": "F", "instant": true, "range": false, "format": "table",
+          "expr": "ffds_bench_run_finished_timestamp_seconds{job=\"ffds-bench-results\",campaign=\"$campaign\",engine=~\"$engine\",scenario=~\"$scenario\",rep=~\"$rep\",subpath=~\"$subpath\"} * 1000",
+          "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ],
+      "transformations": [
+        { "id": "joinByLabels",
+          "options": { "value": "__name__is_ignored", "join": ["engine", "scenario", "rep", "subpath"] } },
+        { "id": "merge", "options": {} },
+        { "id": "organize", "options": {
+            "excludeByName": { "Time": true, "campaign": true, "job": true, "instance": true, "__name__": true },
+            "renameByName": {
+              "Value #A": "duration (s)", "Value #B": "valid",
+              "Value #C": "exit", "Value #D": "transferred",
+              "Value #E": "deleted", "Value #F": "finished" } } }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "custom": { "align": "auto" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "finished" },
+            "properties": [ { "id": "unit", "value": "dateTimeAsIso" } ] },
+          { "matcher": { "id": "byName", "options": "duration (s)" },
+            "properties": [ { "id": "unit", "value": "s" }, { "id": "decimals", "value": 2 } ] }
+        ] },
+      "options": { "showHeader": true, "sortBy": [ { "displayName": "finished", "desc": true } ] }
+    },
+    {
+      "type": "stat",
+      "title": "Valid samples",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 20 },
+      "targets": [ { "refId": "A", "instant": true, "range": false,
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "expr": "count by (engine) (ffds_bench_run_valid{job=\"ffds-bench-results\",campaign=\"$campaign\",engine=~\"$engine\"} == 1)",
+        "legendFormat": "{{engine}}" } ],
+      "fieldConfig": { "defaults": { "unit": "short",
+        "color": { "mode": "fixed", "fixedColor": "green" } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value_and_name" }
+    },
+    {
+      "type": "stat",
+      "title": "Invalid / failed samples",
+      "description": "Failures stay visible; they never enter the medians.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 20 },
+      "targets": [ { "refId": "A", "instant": true, "range": false,
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "expr": "count by (engine) (ffds_bench_run_valid{job=\"ffds-bench-results\",campaign=\"$campaign\",engine=~\"$engine\"} == 0)",
+        "legendFormat": "{{engine}}" } ],
+      "fieldConfig": { "defaults": { "unit": "short", "noValue": "0",
+        "color": { "mode": "fixed", "fixedColor": "red" } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value_and_name" }
+    },
+    {
+      "type": "table",
+      "title": "V4 phase split (engine vs fixup seconds)",
+      "description": "v4 only -- v3 has no equivalent phases and is honestly absent.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 20 },
+      "targets": [
+        { "refId": "A", "instant": true, "range": false, "format": "table",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "ffds_bench_run_engine_seconds{job=\"ffds-bench-results\",campaign=\"$campaign\",engine=~\"$engine\",scenario=~\"$scenario\",rep=~\"$rep\"}" },
+        { "refId": "B", "instant": true, "range": false, "format": "table",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "ffds_bench_run_fixup_seconds{job=\"ffds-bench-results\",campaign=\"$campaign\",engine=~\"$engine\",scenario=~\"$scenario\",rep=~\"$rep\"}" }
+      ],
+      "transformations": [
+        { "id": "joinByLabels",
+          "options": { "value": "v", "join": ["engine", "scenario", "rep"] } },
+        { "id": "merge", "options": {} },
+        { "id": "organize", "options": {
+            "excludeByName": { "Time": true, "campaign": true, "job": true, "instance": true, "subpath": true },
+            "renameByName": { "Value #A": "engine (s)", "Value #B": "fixup (s)" } } }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "decimals": 2 }, "overrides": [] },
+      "options": { "showHeader": true }
+    },
+    {
+      "type": "stat",
+      "title": "Results integrity",
+      "description": "ready must be 1 and parse errors 0 before trusting any number above; loaded counts every completed run on disk.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 20 },
+      "targets": [
+        { "refId": "A", "instant": true, "range": false,
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "ffds_bench_exporter_ready{job=\"ffds-bench-results\"}", "legendFormat": "ready" },
+        { "refId": "B", "instant": true, "range": false,
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "ffds_bench_results_loaded{job=\"ffds-bench-results\"}", "legendFormat": "loaded" },
+        { "refId": "C", "instant": true, "range": false,
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "ffds_bench_result_parse_errors{job=\"ffds-bench-results\"}", "legendFormat": "parse errors" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short",
+        "thresholds": { "mode": "absolute", "steps": [
+          { "color": "green", "value": null } ] } }, "overrides": [
+          { "matcher": { "id": "byName", "options": "ready" },
+            "properties": [ { "id": "thresholds", "value": { "mode": "absolute",
+              "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } } ] },
+          { "matcher": { "id": "byName", "options": "parse errors" },
+            "properties": [ { "id": "thresholds", "value": { "mode": "absolute",
+              "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } } ] }
+        ] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value_and_name", "colorMode": "value" }
+    },
+    {
+      "type": "row", "title": "Live (campaign monitors :9757-9759)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 }, "collapsed": false, "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Jobs running",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 4, "x": 0, "y": 27 },
+      "targets": [ { "refId": "A",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "expr": "sum by (engine) (ffds_sync_jobs_running{job=~\"ffds-sync-bench-.*\"})",
+        "legendFormat": "{{engine}}" } ],
+      "fieldConfig": { "defaults": { "unit": "short", "noValue": "0" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value_and_name" }
+    },
+    {
+      "type": "timeseries",
+      "title": "Live transfer speed",
+      "description": "As reported by the engine's own progress events -- a fresh value proves reporting, not IO progress.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 10, "x": 4, "y": 27 },
+      "targets": [ { "refId": "A",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "expr": "ffds_sync_job_speed_bytes_per_second{job=~\"ffds-sync-bench-.*\"}",
+        "legendFormat": "{{engine}} {{subpath}}" } ],
+      "fieldConfig": { "defaults": { "unit": "Bps",
+        "custom": { "drawStyle": "line", "fillOpacity": 10, "spanNulls": false } },
+        "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Live progress",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 10, "x": 14, "y": 27 },
+      "targets": [ { "refId": "A",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "expr": "ffds_sync_job_progress_ratio{job=~\"ffds-sync-bench-.*\"}",
+        "legendFormat": "{{engine}} {{subpath}}" } ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1,
+        "custom": { "drawStyle": "line", "fillOpacity": 10, "spanNulls": false } },
+        "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } }
+    },
+    {
+      "type": "stat",
+      "title": "Live telemetry health",
+      "description": "Monitor parse errors must stay 0 (the event-contract canary for the v4 adapter); freshness is seconds since the newest event per engine.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 3, "w": 4, "x": 0, "y": 32 },
+      "targets": [
+        { "refId": "A", "instant": true, "range": false,
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (engine) (ffds_sync_parse_errors_total{job=~\"ffds-sync-bench-.*\"})",
+          "legendFormat": "errors {{engine}}" },
+        { "refId": "B", "instant": true, "range": false,
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "time() - ffds_sync_log_last_event_timestamp_seconds{job=~\"ffds-sync-bench-.*\"}",
+          "legendFormat": "age {{engine}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "noValue": "0" }, "overrides": [
+        { "matcher": { "id": "byRegexp", "options": "age.*" },
+          "properties": [ { "id": "unit", "value": "s" } ] } ] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value_and_name" }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["sync", "bench"],
+  "templating": {
+    "list": [
+      {
+        "name": "campaign", "label": "campaign", "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(ffds_bench_run_valid{job=\"ffds-bench-results\"}, campaign)",
+        "refresh": 2, "sort": 4, "multi": false, "includeAll": false,
+        "current": {}
+      },
+      {
+        "name": "engine", "label": "engine", "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(ffds_bench_run_valid{job=\"ffds-bench-results\",campaign=\"$campaign\"}, engine)",
+        "refresh": 2, "sort": 1, "multi": true, "includeAll": true,
+        "current": { "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "scenario", "label": "scenario", "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(ffds_bench_run_valid{job=\"ffds-bench-results\",campaign=\"$campaign\"}, scenario)",
+        "refresh": 2, "sort": 1, "multi": true, "includeAll": true,
+        "current": { "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "rep", "label": "rep", "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(ffds_bench_run_valid{job=\"ffds-bench-results\",campaign=\"$campaign\"}, rep)",
+        "refresh": 2, "sort": 3, "multi": true, "includeAll": true,
+        "current": { "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "subpath", "label": "subpath", "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(ffds_bench_run_valid{job=\"ffds-bench-results\",campaign=\"$campaign\"}, subpath)",
+        "refresh": 2, "sort": 1, "multi": true, "includeAll": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "timezone": "browser",
+  "title": "FFDS Sync Bench - engine comparison",
+  "uid": "ffds-sync-bench",
+  "version": 1
+}

@@ -9,7 +9,7 @@ status`)、同一份 events.log 契約**,monitor
 
 ## 為什麼有 v4
 
-stall report(`../sync_monitor/smb-stall-report.zh-tw.md`)
+stall report(`sync_monitor/smb-stall-report.zh-tw.md`)
 釘死 SMB 讀取被 ~1.25s 的 server 應用層 stall 支配,吞吐 ≈ iodepth ÷
 (stall率 × 1.25s),單流 QD1 讀者(rsync 正是)最慘。rclone 的三個旋鈕直接
 拉高 in-flight IO:`--transfers`(檔案並行)、`--checkers`(列舉/比對並行)、
@@ -155,9 +155,9 @@ final 也不回退到較早的 periodic snapshot。
 # sync-host(先不裝 timer/service——v4 尚未定案為正式引擎)
 install -m 0755 ffds-sync-v4.sh /usr/local/ffds/ffds_sync_v4.sh
 install -m 0600 /dev/null /etc/ffds-rclone.conf   # 填入 smb 憑證(rclone obscure)
-install -m 0644 ../sync_monitor/ffds-sync-monitor@.service /etc/systemd/system/
+install -m 0644 sync_monitor/ffds-sync-monitor@.service /etc/systemd/system/
 install -d /etc/ffds-sync-monitor
-install -m 0644 ../sync_monitor/monitor-env/v4.env /etc/ffds-sync-monitor/
+install -m 0644 sync_monitor/monitor-env/v4.env /etc/ffds-sync-monitor/
 systemctl daemon-reload && systemctl enable --now ffds-sync-monitor@v4
 # 煙霧:小 subpath、scratch dst(改腳本 fixed config 或用 bench 的副本機制)
 FFDS_V4_BACKEND=mount /usr/local/ffds/ffds_sync_v4.sh one <小subpath>

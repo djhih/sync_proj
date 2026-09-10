@@ -20,7 +20,7 @@ ffds_sync.sh ──(發生了什麼:events.log)──▶ ffds_sync_monitor.py �
 
 - **systemd → 腳本**:排程、cgroup 資源帳(CPU/IO/memory/PSI)、sandbox、
   重疊防護都交給 systemd;腳本只管把一批同步做完。
-- **腳本 → monitor**:`../sync_monitor/ffds_sync_monitor.py`
+- **腳本 → monitor**:`sync_monitor/ffds_sync_monitor.py`
   **只讀 `/var/log/ffds-sync/events.log`**——不碰 `/proc`、不 pgrep、
   不看掛載、不 parse rsync 原始輸出。知道事情的人(腳本)在事情發生的
   當下把它寫下來,監控只是轉述。
@@ -156,7 +156,7 @@ Metric 名稱盡量沿用,dashboard / alerts 改動最小:
   PrivateTmp);env 旋鈕寫在 `Environment=`;**不設 `Restart=`**、無
   `[Install]`(由 timer 或手動拉起)。**batch 因此有自己的 cgroup**,
   PSI/資源觀測免費取得。
-- `../sync_monitor/ffds-sync-monitor.service`:
+- `sync_monitor/ffds-sync-monitor.service`:
   常駐,只讀 `/var/log/ffds-sync`,port 9755 沿用(Prometheus scrape
   job `ffds-sync` 不用改 target)。
 
@@ -181,8 +181,8 @@ Metric 名稱盡量沿用,dashboard / alerts 改動最小:
 install -m 0755 ffds-sync-v3.sh /usr/local/ffds/ffds_sync.sh
 install -m 0644 ffds-sync.logrotate /etc/logrotate.d/ffds-sync
 install -m 0644 ffds-sync.service ffds-sync.timer /etc/systemd/system/
-install -m 0755 ../sync_monitor/ffds_sync_monitor.py /usr/local/bin/ffds-sync-monitor
-install -m 0644 ../sync_monitor/ffds-sync-monitor.service /etc/systemd/system/
+install -m 0755 sync_monitor/ffds_sync_monitor.py /usr/local/bin/ffds-sync-monitor
+install -m 0644 sync_monitor/ffds-sync-monitor.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now ffds-sync-monitor
 # 煙霧測試(不動 timer)
@@ -279,7 +279,7 @@ enable timer 前的驗收準則)在
 
 ## 對照 smb-stall-report 的 review 結論(2026-09-03)
 
-`../sync_monitor/smb-stall-report.zh-tw.md`
+`sync_monitor/smb-stall-report.zh-tw.md`
 把 SMB 讀取釘死為 server 應用層 stall(~1.25s 窄帶、15–25% 機率),
 latency-bound、並行度近線性放大;root cause 未定,2×2 實驗最高優先。
 對本設計的影響:

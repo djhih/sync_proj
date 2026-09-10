@@ -1,0 +1,28 @@
+[Unit]
+Description=FFDS bench Results exporter (per-run gauges from completed JSON)
+Documentation=https://github.com/jhih/llt/sync_monitor
+After=multi-user.target
+
+[Service]
+Type=simple
+# Deploy: install -m 0755 ffds_bench_exporter.py /usr/local/bin/ffds-bench-exporter
+ExecStart=/usr/local/bin/ffds-bench-exporter
+Restart=on-failure
+RestartSec=5s
+User=root
+Group=root
+# Reads ONLY the immutable per-run result files ffds-bench.sh publishes;
+# never the mounts, /proc walkers, credentials or the CSV.  Restarting
+# rebuilds everything from disk, so completed results survive campaign
+# teardown -- keep this unit up until the analysis is archived.
+Environment=FFDS_BENCH_LISTEN=0.0.0.0:9760
+Environment=FFDS_BENCH_RESULTS_DIR=/var/log/ffds-bench/results
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+InaccessiblePaths=-/mnt
+ReadOnlyPaths=-/var/log/ffds-bench/results
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,28 @@
+[Unit]
+Description=FFDS sync monitor (event-log fed Prometheus exporter)
+Documentation=https://github.com/jhih/llt/sync_monitor
+After=multi-user.target
+
+[Service]
+Type=simple
+# Deploy: install -m 0755 ffds_sync_monitor.py /usr/local/bin/ffds-sync-monitor
+ExecStart=/usr/local/bin/ffds-sync-monitor
+Restart=on-failure
+RestartSec=5s
+# Reads exactly one file: /var/log/ffds-sync/events.log (root-owned,
+# written by the sync script). Nothing under /proc, nothing under /mnt.
+User=root
+Group=root
+# 0.0.0.0 so the monitoring host can scrape directly. Same caveat as the
+# other exporters: no auth, no TLS — the network layer is the access
+# control (see monitoring/prometheus/prometheus.yml).
+Environment=FFDS_SYNC_LISTEN=0.0.0.0:9755
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+InaccessiblePaths=-/mnt
+ReadOnlyPaths=/var/log/ffds-sync
+
+[Install]
+WantedBy=multi-user.target

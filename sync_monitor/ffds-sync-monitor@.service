@@ -1,0 +1,35 @@
+[Unit]
+Description=FFDS sync monitor instance %i (event-log fed Prometheus exporter)
+Documentation=https://github.com/jhih/llt/sync_monitor
+After=multi-user.target
+
+[Service]
+Type=simple
+# Same binary as the primary ffds-sync-monitor.service (9755) -- the
+# monitor is fully parameterized by environment, so extra instances need
+# only an env file:
+#   install -d /etc/ffds-sync-monitor
+#   install -m 0644 monitor-env/*.env /etc/ffds-sync-monitor/
+#   systemctl enable --now ffds-sync-monitor@v4
+# Instances: v4 (9756, /var/log/ffds-sync-v4) and the campaign-only
+# bench-v3 / bench-v4-mount / bench-v4-smb (9757-9759, /var/log/ffds-bench)
+# -- stop the bench ones after the campaign and remove their scrape jobs.
+ExecStart=/usr/local/bin/ffds-sync-monitor
+EnvironmentFile=/etc/ffds-sync-monitor/%i.env
+Restart=on-failure
+RestartSec=5s
+User=root
+Group=root
+# Reads exactly one events.log. Nothing under /proc, nothing under /mnt.
+# 0.0.0.0 so the monitoring host can scrape directly; no auth, no TLS --
+# the network layer is the access control (see prometheus.yml).
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+InaccessiblePaths=-/mnt
+# '-' prefixes: the live log dirs may not exist outside campaign windows
+ReadOnlyPaths=-/var/log/ffds-sync -/var/log/ffds-sync-v4 -/var/log/ffds-bench
+
+[Install]
+WantedBy=multi-user.target

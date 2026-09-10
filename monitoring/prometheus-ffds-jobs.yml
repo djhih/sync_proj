@@ -1,0 +1,56 @@
+# ffds scrape jobs -- paste into the 'scrape_configs:' list of your
+# prometheus.yml, then reload (curl -X POST <prom>/-/reload).
+# Ports: 9755 existing v1/v2 exporter, 9756 v4 live monitor,
+#        9757-9759 bench live monitors, 9760 bench results exporter.
+
+  # ffds-sync runs on the SYNC host (sync-host — the SMB->WEKA staging box),
+  # which is NOT the same machine as your GPU/node jobs. It watches
+  # sync_all.sh/sync_ffds.sh via their logs and /proc (see
+  # sync_monitor/ffds_sync_exporter.py). The exporter samples internally
+  # every 60s and /metrics only serves the cached snapshot, so the default
+  # 15s scrape adds no load on the target. Replace `sync-host` with the real
+  # hostname; if other jobs ever scrape that host, `instance` must be
+  # byte-identical to theirs (same join rule as above).
+  - job_name: ffds-sync
+    static_configs:
+      - targets: ["sync-host:9755"]
+        labels:
+          instance: sync-host
+
+  # ffds-sync v4 + bench (all on sync-host, same byte-identical `instance` as
+  # the ffds-sync job above). 9756 is the v4 engine's live monitor -- no
+  # engine label on purpose: FFDS_V4_BACKEND can switch between mount and
+  # smb, a static label would misattribute. The three ffds-sync-bench-*
+  # jobs are TEMPORARY (campaign windows only): stop their monitor
+  # instances and DELETE these jobs afterwards, or they sit up==0 and
+  # fire ExporterDown forever (same caveat as amduprof). 9760 serves the
+  # per-run bench RESULTS (immutable gauges, one label set per run) and
+  # stays until the campaign analysis is archived.
+  - job_name: ffds-sync-v4
+    static_configs:
+      - targets: ["sync-host:9756"]
+        labels:
+          instance: sync-host
+  - job_name: ffds-sync-bench-v3
+    static_configs:
+      - targets: ["sync-host:9757"]
+        labels:
+          instance: sync-host
+          engine: v3
+  - job_name: ffds-sync-bench-v4-mount
+    static_configs:
+      - targets: ["sync-host:9758"]
+        labels:
+          instance: sync-host
+          engine: v4-mount
+  - job_name: ffds-sync-bench-v4-smb
+    static_configs:
+      - targets: ["sync-host:9759"]
+        labels:
+          instance: sync-host
+          engine: v4-smb
+  - job_name: ffds-bench-results
+    static_configs:
+      - targets: ["sync-host:9760"]
+        labels:
+          instance: sync-host
