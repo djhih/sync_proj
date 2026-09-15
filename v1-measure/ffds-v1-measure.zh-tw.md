@@ -29,8 +29,19 @@ git diff        # 逐行確認只改到預期的 key
 ```
 
 `V1_*_ROOT` 對不上目標機的 v1 時,腳本會在產生副本那一步拒絕(錨點數量不符),不會誤跑。
+`bench/ffds-bench.sh` 以 v1 為引擎時用的也是這支 instrumenter,所以這裡沒替換,bench 的 v1 引擎也會拒絕。
 
 ## 跟 bench 的關係
+
+**v1 現在也是 bench 的引擎之一**(`ffds-bench.sh --engines v1,v3,v4-mount,v4-smb`),
+用的是這裡的 `instrument --events-log`。兩者的分工:
+
+| | bench 的 v1 引擎 | 這支獨立工具 |
+| --- | --- | --- |
+| 何時用 | 要和 v3/v4 並排比較(同一份來源、同一個 campaign、引擎順序輪轉) | 只想量 v1,不想開整個 campaign |
+| 結果去處 | bench 的結果目錄 → :9760 exporter → Grafana | 自己的 outdir(`results.csv`) |
+| 額外欄位 | 無 | `time -v` 的 `time_*` |
+
 
 - bench 的 [`ffds_bench_data.py`](../bench/ffds_bench_data.py) 只被**呼叫**
   (`manifest`、`select-incr`、`verify-dst`、`scope-worker`)和**唯讀 import**,一行都沒改。
@@ -48,7 +59,8 @@ git diff        # 逐行確認只改到預期的 key
 | 目的端變數(值為 `/mnt/dst-fs/DataSet` 的那一行,依值定位、不依變數名)→ `/mnt/dst-fs/ffds-v1-measure/<id>/DataSet` | 不寫 production 目的端 |
 | log `/var/log/rsync-smb*.log` → `<outdir>/v1log/` | v1 用 `>` 寫 log,會蓋掉 production 的 |
 | rsync 加 `--stats` | 只多印結尾摘要,才拿得到 `files_transferred` |
-| 3 行 `V1MEASURE` 標記(rsync 前、rsync 後含 rc、find 掃完) | v1 永遠 exit 0,rsync rc 只能從這裡拿;順便切出 rsync / fixup 兩段時間 |
+| 3 行 `V1MEASURE` 標記(rsync 前、rsync 後含 rc、find 掃完) | 切出 rsync / fixup 兩段時間 |
+| 結尾 `exit ${v1mRc:-93}` | v1 自己永遠 exit 0(rsync 的 rc 被吞掉);93 = v1 的 pgrep 檢查跳過了工作 |
 
 其餘一律原樣:`rsync -avzhP --no-owner --no-group --delete`、4 次 find(含寫反的 chown 判斷)、
 pgrep 互斥檢查、log 導向。v1 的形狀對不上(錨點數量不符、第 1 行不是 `#!/bin/bash`)
@@ -110,12 +122,12 @@ cat /root/ffds-v1-measure-*/v1-instrument.diff      # 確認只改了上表那�
 - `mem_peak_bytes` 是 cgroup `memory.peak`,含 page cache;`time_max_rss_kb` 是單一行程 RSS,兩者不能互比。
 - `cifs_*_delta` 是全主機計數器,非零可能來自別的程序。
 
-## 驗證狀態(2026-09-11,本機 sandbox)
+## 驗證狀態(2026-09-14,本機 sandbox)
 
-[`../test/ffds-v1-measure-local-test.sh`](../test/ffds-v1-measure-local-test.sh) **62/62**:
+[`../test/ffds-v1-measure-local-test.sh`](../test/ffds-v1-measure-local-test.sh) **65/65**:
 v1 原文放在 [`../test/fixtures/v1/sync_ffds.sh`](../test/fixtures/v1/sync_ffds.sh)(站點值已換成佔位符,邏輯逐行保留),
 搭配真的會同步的 rsync shim + GNU time / systemd shim。
 涵蓋完整 cold/warm/incr × 2 reps 全 valid、diff 只動預期行、深度 3 的 subpath、
-rsync 回 23 而 v1 回 0 → invalid 並停止、v1 的 pgrep 檢查跳過 job → invalid、干擾預檢拒絕、
+rsync 回 23 → 副本傳出 23、invalid 並停止、v1 的 pgrep 檢查跳過 job → exit 93 且 invalid、干擾預檢拒絕、
 拒絕貼上的非腳本檔。**真 rsync、真 systemd scope、真 cifs 尚未驗證**(本機沒有 rsync)——
 sync-host 煙霧測試時確認 `--stats` 摘要解析與 `resource.json` 數值。

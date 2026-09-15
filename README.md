@@ -22,9 +22,10 @@ sync-host 上的夜間同步(SMB share → WEKA `DataSet`)兩個版本:
 | [`test/ffds-sync-v4-local-test.sh`](test/ffds-sync-v4-local-test.sh) | v4 本機 harness(134 項;含真實 rclone 層,有 monitor +1) |
 | [`test/ffds-sync-v3-test-plan.zh-tw.md`](test/ffds-sync-v3-test-plan.zh-tw.md) | L1 本機 → L4 上線的測試計畫與驗收準則 |
 | [`test/fixtures/rclone/`](test/fixtures/rclone/) | rclone JSON 契約 fixture(釘於 v1.75.1,附重釘腳本) |
-| [`test/ffds-bench-local-test.sh`](test/ffds-bench-local-test.sh) | bench 本機 harness(50 項,全 sandbox) |
+| [`test/ffds-bench-local-test.sh`](test/ffds-bench-local-test.sh) | bench 本機 harness(57 項,全 sandbox) |
+| [`test/ffds-v1-measure-local-test.sh`](test/ffds-v1-measure-local-test.sh) | v1 量測工具 harness(65 項,全 sandbox) |
 
-### 效能實驗框架(v3 vs v4)
+### 效能實驗框架(v1 vs v3 vs v4)
 
 | 檔案 | 用途 |
 | --- | --- |
@@ -32,6 +33,9 @@ sync-host 上的夜間同步(SMB share → WEKA `DataSet`)兩個版本:
 | [`bench/ffds-bench.zh-tw.md`](bench/ffds-bench.zh-tw.md) | 實驗設計(要回答的問題、情境定義、有效閘門、誠實界線) |
 | [`bench/ffds-bench.sh`](bench/ffds-bench.sh) | campaign runner(root、手動、離峰) |
 | [`bench/ffds_bench_data.py`](bench/ffds_bench_data.py) | 路徑防護 / manifest / 結果層(runner 的工具箱) |
+| [`bench/ffds_bench_analyze.py`](bench/ffds_bench_analyze.py) | campaign 後的離線分析(讀 results.csv,印 markdown 表) |
+| [`v1-measure/ffds-v1-measure.zh-tw.md`](v1-measure/ffds-v1-measure.zh-tw.md) | **v1 基準線**:bench 的 v1 引擎說明 + 單獨量測工具 |
+| [`v1-measure/ffds-v1-measure.sh`](v1-measure/ffds-v1-measure.sh) + [`ffds_v1_measure.py`](v1-measure/ffds_v1_measure.py) | v1 的 instrumenter 與獨立量測 runner |
 
 ### 監控(events.log 的消費端)
 
@@ -49,8 +53,9 @@ sync-host 上的夜間同步(SMB share → WEKA `DataSet`)兩個版本:
 
 ```bash
 bash test/ffds-sync-local-test.sh
-bash test/ffds-sync-v4-local-test.sh    # rclone 在 PATH 時多跑真實層
-bash test/ffds-bench-local-test.sh      # 50 項
+bash test/ffds-sync-v4-local-test.sh      # rclone 在 PATH 時多跑真實層
+bash test/ffds-bench-local-test.sh        # 57 項(含 v1 引擎)
+bash test/ffds-v1-measure-local-test.sh   # 65 項
 python3 sync_monitor/test_ffds_bench_exporter.py
 ```
 

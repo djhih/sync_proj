@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """FFDS bench Results exporter -- per-run gauges from completed JSON only.
 
-Reads immutable per-run result files written by sendout/bench/ffds-bench.sh
+Reads immutable per-run result files written by bench/ffds-bench.sh
 (one JSON per finished run under <results root>/<campaign>/runs/) and
 serves them as Prometheus gauges on :9760.  Restarting rebuilds everything
 from disk; the monitor's last_run metrics and the CSV are NOT inputs.
@@ -30,7 +30,7 @@ LISTEN = os.environ.get("FFDS_BENCH_LISTEN", "127.0.0.1:9760")
 RESULTS_DIR = os.environ.get("FFDS_BENCH_RESULTS_DIR",
                              "/var/log/ffds-bench/results")
 
-ENGINES = ("v3", "v4-mount", "v4-smb")
+ENGINES = ("v1", "v3", "v4-mount", "v4-smb")
 SCENARIOS = ("cold", "warm", "incr")
 
 # metric name -> result field (plain copy-through gauges)
@@ -62,8 +62,11 @@ HELP = {
     "ffds_bench_run_source_size_bytes": "Bytes in the shared source manifest.",
     "ffds_bench_run_files_transferred": "Files the engine reported transferred.",
     "ffds_bench_run_files_deleted": "Files the engine reported deleted.",
-    "ffds_bench_run_fixup_seconds": "v4 ownership/mode fixup phase (absent for v3).",
-    "ffds_bench_run_engine_seconds": "v4 engine pipeline phase (absent for v3).",
+    "ffds_bench_run_fixup_seconds":
+        "Ownership/mode fixup phase: v4's fixup pass, v1's find sweeps "
+        "(absent for v3, which folds both into the rsync pass).",
+    "ffds_bench_run_engine_seconds":
+        "Transfer phase: v4's rclone pipeline, v1's rsync (absent for v3).",
     "ffds_bench_run_other_sync_running":
         "1 when the interference watcher saw another sync during the run; "
         "absent when the watcher could not observe.",

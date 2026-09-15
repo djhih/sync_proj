@@ -1,7 +1,7 @@
 # ffds scrape jobs -- paste into the 'scrape_configs:' list of your
 # prometheus.yml, then reload (curl -X POST <prom>/-/reload).
 # Ports: 9755 existing v1/v2 exporter, 9756 v4 live monitor,
-#        9757-9759 bench live monitors, 9760 bench results exporter.
+#        9757-9759 + 9761 bench live monitors, 9760 bench results exporter.
 
   # ffds-sync runs on the SYNC host (sync-host — the SMB->WEKA staging box),
   # which is NOT the same machine as your GPU/node jobs. It watches
@@ -20,7 +20,7 @@
   # ffds-sync v4 + bench (all on sync-host, same byte-identical `instance` as
   # the ffds-sync job above). 9756 is the v4 engine's live monitor -- no
   # engine label on purpose: FFDS_V4_BACKEND can switch between mount and
-  # smb, a static label would misattribute. The three ffds-sync-bench-*
+  # smb, a static label would misattribute. The four ffds-sync-bench-*
   # jobs are TEMPORARY (campaign windows only): stop their monitor
   # instances and DELETE these jobs afterwards, or they sit up==0 and
   # fire ExporterDown forever (same caveat as amduprof). 9760 serves the
@@ -31,6 +31,12 @@
       - targets: ["sync-host:9756"]
         labels:
           instance: sync-host
+  - job_name: ffds-sync-bench-v1
+    static_configs:
+      - targets: ["sync-host:9761"]
+        labels:
+          instance: sync-host
+          engine: v1
   - job_name: ffds-sync-bench-v3
     static_configs:
       - targets: ["sync-host:9757"]

@@ -1,4 +1,4 @@
-# ffds-bench — v3/v4 同步引擎效能實驗
+# ffds-bench — v1/v3/v4 同步引擎效能實驗
 
 回答兩個問題(對照 stall report 未知 #9:rsync 實際 buffered 吞吐從未量過):
 
@@ -8,18 +8,37 @@
 | Q2 | 目的端已一致時,每秒能完成多少檔案的檢查? | `warm`(不變重掃) | 來源 regular-file 數 ÷ 總耗時 |
 | 輔 | 缺 N 檔補齊要多久? | `incr` | 同 Q1 口徑 |
 
-比較 **v3**(rsync)、**v4-mount**(rclone 走 kernel cifs)、**v4-smb**
-(rclone 原生 SMB 連線);每組 × 每情境 ≥3 筆 valid。
+比較 **v1**(現行 production 的 `sync_ffds.sh`,基準線)、**v3**(rsync)、
+**v4-mount**(rclone 走 kernel cifs)、**v4-smb**(rclone 原生 SMB 連線);
+每組 × 每情境 ≥3 筆 valid。
+
+## v1 引擎(基準線)
+
+v1 沒有固定設定區塊、沒有 `one` 動詞、不寫 events.log,所以它的副本不是 sed 改寫,
+而是由 [`../v1-measure/ffds_v1_measure.py`](../v1-measure/ffds_v1_measure.py)
+的 `instrument --events-log` 產生。加的東西只有:目的端與 log 路徑改到 campaign scratch、
+rsync 加 `--stats`、三行計時標記、把 rsync 的 exit code 傳出來(v1 自己永遠 exit 0,
+跳過工作時傳 93),以及 runner 需要的三個事件。**會花時間的部分原封不動**:
+`rsync -avzhP --no-owner --no-group --delete`、4 次 find 掃描(含寫反的 chown 判斷)。
+每個 campaign 的 `scripts/v1-instrument.diff` 記錄了到底加了哪幾行;
+v1 的形狀對不上就拒絕產生副本,不猜。
+
+`engine_s` / `fixup_s` 對 v1 的意義是「rsync 段」與「4 次 find 段」,對 v4 是
+「rclone pipeline」與「chown/chmod fixup」,v3 兩者合一所以是 null。
+v1 想單獨跑(不開 campaign)時用
+[`../v1-measure/ffds-v1-measure.zh-tw.md`](../v1-measure/ffds-v1-measure.zh-tw.md)。
 
 ## 架構
 
 ```
 ffds-bench.sh(sync-host、root、手動、離峰)
- ├─ 腳本副本(sed 改寫 fixed config → 每引擎 scratch dst / live log)
+ ├─ 腳本副本(v3/v4:sed 改寫 fixed config;v1:instrumenter)
+ │   → 每引擎 scratch dst / live log
  ├─ 每輪 systemd-run --scope 包 --scope-worker:worker 活著時自量
  │   cgroup CPU/IO/memory.peak,量完才退出
  ├─ live events → /var/log/ffds-bench/<engine>/events.log
- │       → ffds-sync-monitor@bench-* (:9757-9759) → Grafana Live 區
+ │       → ffds-sync-monitor@bench-* (:9757-9761) → Grafana Live 區
+ │         (v1 只有 start/end,沒有 progress)
  └─ 每輪權威 JSON → /var/log/ffds-bench/results/<campaign>/runs/
          → ffds_bench_exporter (:9760) → Grafana Results 區
          → results.csv / SUMMARY.txt(離線重算,逐 byte 可攜副本)
@@ -34,7 +53,7 @@ ffds-bench.sh(sync-host、root、手動、離峰)
 
 ```
 ffds-bench.sh -p <subpath> [-r reps=3] [-o outdir]
-              [--engines v3,v4-mount,v4-smb] [--scenarios cold,warm,incr]
+              [--engines v1,v3,v4-mount,v4-smb] [--scenarios cold,warm,incr]
               [--incr-files N=100] [--no-drop-caches] [--keep-dst] [--force]
               [--run-timeout seconds=7200]
 ```
@@ -78,7 +97,7 @@ dry-run/forced/aborted、duration>0、來源前後 manifest 相同、目的端�
 | 一個資料夾多久同步完(Q1) | Folder sync duration(valid 中位數 bar) | `duration_s` |
 | 每秒掃多少檔案(Q2) | Warm verification throughput | `source_files_total / duration_s` |
 | 逐筆結果(含失敗) | Completed runs 表格 | 整列 |
-| v4 分段 | V4 phase split | `engine_s` / `fixup_s`(v3 為 null,不偽造) |
+| 分段 | Phase split | `engine_s` / `fixup_s`(v1=rsync/find,v4=rclone/fixup,v3 為 null) |
 | 資料可信度 | Results integrity(ready/loaded/parse errors) | — |
 | 進行中 | Live 區(speed/progress/jobs) | —(不進成績) |
 | CIFS metadata ops(smb 繞過證明) | —(不在 Prometheus) | `cifs_*_delta` |
@@ -108,20 +127,26 @@ install -m 0644 ../sync_monitor/monitor-env/bench-*.env /etc/ffds-sync-monitor/
 install -m 0755 ../sync_monitor/ffds_bench_exporter.py /usr/local/bin/ffds-bench-exporter
 install -m 0644 ../sync_monitor/ffds-bench-exporter.service /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now ffds-sync-monitor@bench-{v3,v4-mount,v4-smb} ffds-bench-exporter
-#    prometheus.yml 加五個 job(repo 已備好)後 reload;dashboard 佈署
+systemctl enable --now ffds-sync-monitor@bench-{v1,v3,v4-mount,v4-smb} ffds-bench-exporter
+#    prometheus.yml 加六個 job(repo 已備好)後 reload;dashboard 佈署
 # 2. 煙霧:小 subpath、單引擎單情境
 ./ffds-bench.sh -p <小subpath> -r 1 --engines v4-mount --scenarios cold
 # 3. 正式:離峰窗口
-./ffds-bench.sh -p <subpath> -r 3
+./ffds-bench.sh -p <subpath> -r 3        # 四個引擎;-r 4 可讓順序完全平衡
 # 4. 收尾:歸檔 <outdir>;停 bench live monitors、刪其 scrape jobs;
 #    :9760 與 results 留到分析封存完
 ```
 
 ## Caveat(誠實界線)
 
+- **v1 的數字是「加了儀器的 v1」**:多了 `--stats` 的摘要輸出、三行 `date` 標記,
+  以及結束時一次 python 呼叫(把自己的 log 轉成事件)。相對於一次同步的秒數可忽略,
+  但它確實在計時區間內。
+- **4 個引擎時 Latin square 要 `-r 4`** 才能讓每個引擎在每個位置各跑一次;
+  `-r 3` 仍會輪轉,只是位置不均等(順序效應看 analyze 的第 6 節)。
 - server ARC 不可控:client drop_caches 不清 server 快取;manifest/驗證本身
-  也會暖快取。緩解:引擎順序每 rep 洗牌(seed 印出可重現)、≥3 reps、
+  也會暖快取。緩解:引擎順序每 rep 以 Latin square 輪轉(每引擎在每個位置各一次;
+  舊版 seeded shuffle 對 3 引擎的 seed 1–3 恰好產生同一排列,等於沒洗)、≥3 reps、
   逐筆呈現非只中位數;**不自稱 cold-cache benchmark**。
 - `cifs_*_delta` 是 host-wide 計數器,非零可能來自別的程序;
   v4-smb 的 delta≈0 是「繞過 kernel mount」的相容證據,不是成功必要條件。
@@ -141,7 +166,8 @@ server/pool。要定罪根因仍需原 2×2(控制 sync on/off × 連線隔離�
 ## 驗證狀態(2026-09-08)
 
 - 本機 harness([`../test/ffds-bench-local-test.sh`](../test/ffds-bench-local-test.sh)):
-  **50/50 綠**——路徑防護全套(traversal/symlink 祖先/偽 marker/錯掛載,
+  **57/57 綠**(含 v1 引擎:單獨三情境全 valid、與 v4-mount 同 campaign 共用同一份
+  來源 manifest;v1 用 rsync shim,真 rsync 尚未驗)——路徑防護全套(traversal/symlink 祖先/偽 marker/錯掛載,
   外部 sentinel 證明拒絕時資料不變)、完整 campaign(cold/warm/incr × 2 reps
   全 valid、CSV 可重算、同 tuple 拒絕覆寫)、失敗即停且保留 scratch、
   干擾預檢拒絕。

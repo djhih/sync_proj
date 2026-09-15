@@ -47,7 +47,7 @@ import sys
 SCHEMA_VERSION = 1
 DATASET = "DataSet"
 MARKER = ".ffds-bench-campaign"
-ENGINES = ("v3", "v4-mount", "v4-smb")
+ENGINES = ("v1", "v3", "v4-mount", "v4-smb")
 SCENARIOS = ("cold", "warm", "incr")
 
 CAMPAIGN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -518,7 +518,7 @@ def compute_valid(rec, expect_transferred, no_expectations):
         req(rec.get("files_transferred") == expect_transferred,
             f"transferred != expected {expect_transferred}")
         req((rec.get("files_deleted") or 0) == 0, "files deleted nonzero")
-        if rec.get("engine") != "v3":
+        if str(rec.get("engine")).startswith("v4"):
             req((rec.get("rclone_deletes") or 0) == 0, "rclone deletes nonzero")
             req((rec.get("rclone_deleted_dirs") or 0) == 0,
                 "rclone deleted dirs nonzero")
@@ -774,14 +774,17 @@ def cmd_assemble(args):
         man = json.load(f)
 
     def num(d, k):
+        # rsync's stats2 summary groups thousands ("2,084"); the monitor
+        # strips them the same way (parse_human_size).  v4 emits plain
+        # integers, so this is a no-op there.
         try:
-            return int(d[k])
+            return int(str(d[k]).replace(",", ""))
         except (KeyError, TypeError, ValueError):
             return None
 
     def fnum(d, k):
         try:
-            return float(d[k])
+            return float(str(d[k]).replace(",", ""))
         except (KeyError, TypeError, ValueError):
             return None
 
@@ -789,7 +792,8 @@ def cmd_assemble(args):
     rec = {
         "schema_version": SCHEMA_VERSION,
         "campaign": args.campaign, "run_id": args.run_id, "engine": engine,
-        "backend": {"v3": None, "v4-mount": "mount", "v4-smb": "smb"}[engine],
+        "backend": {"v1": None, "v3": None,
+                    "v4-mount": "mount", "v4-smb": "smb"}[engine],
         "scenario": args.scenario, "rep": args.rep, "subpath": args.subpath,
         "started_ts": args.started, "finished_ts": args.finished,
         "duration_s": res.get("elapsed_s"),
@@ -807,7 +811,9 @@ def cmd_assemble(args):
         "source_unchanged": args.src_ok,
         "destination_verified": args.dst_ok,
         "files_transferred": num(stats, "transferred"),
-        "files_deleted": num(stats, "deleted" if engine == "v3" else "deletes"),
+        # v1 and v3 are rsync: its summary says "deleted"; rclone "deletes"
+        "files_deleted": num(stats, "deletes" if engine.startswith("v4")
+                             else "deleted"),
         "rclone_checks": num(stats, "checks"),
         "rclone_total_checks": num(stats, "total_checks"),
         "rclone_transfer_bytes": num(stats, "transfer_bytes"),

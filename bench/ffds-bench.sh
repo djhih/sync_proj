@@ -1,6 +1,7 @@
 #!/bin/bash
 #
-# ffds-bench.sh -- v3(rsync) vs v4(rclone mount/smb) sync benchmark campaign
+# ffds-bench.sh -- v1(legacy) vs v3(rsync) vs v4(rclone mount/smb)
+# sync benchmark campaign
 # Run manually as root on sync-host, OUTSIDE sync hours, in a quiet window
 # (see ffds-bench.zh-tw.md, side-effect inventory B7 of the spec):
 #   * cold copies put real read load on the SMB server and real write
@@ -11,9 +12,17 @@
 #   * v4-smb opens its own SMB sessions to the server
 #
 #   ffds-bench.sh -p <subpath> [-r reps] [-o outdir]
-#                 [--engines v3,v4-mount,v4-smb] [--scenarios cold,warm,incr]
+#                 [--engines v1,v3,v4-mount,v4-smb] [--scenarios cold,warm,incr]
 #                 [--incr-files N] [--no-drop-caches] [--keep-dst] [--force]
 #                 [--run-timeout seconds]
+#
+# The v1 engine is the legacy script still in production: it has no
+# fixed-config block, no 'one' verb and no events.log, so its copy is made
+# by ../v1-measure/ffds_v1_measure.py (instrument --events-log), which
+# rewrites paths, adds rsync --stats, propagates rsync's exit code (v1
+# swallows it) and emits the three events the runner needs.  Everything
+# that costs time -- rsync -avzhP, the four find sweeps -- stays verbatim;
+# scripts/v1-instrument.diff records exactly what was added.
 #
 # This script only orchestrates; everything with teeth lives in
 # ffds_bench_data.py: path guards (component containment, campaign
@@ -42,6 +51,7 @@ smbRemote=nas:share1/DataSet
 rcloneConfig=/etc/ffds-rclone.conf
 cifsStats=/proc/fs/cifs/Stats
 timerUnit=ffds-sync.timer
+v1Script=/usr/local/ffds/sync_ffds.sh
 # ─────────────────────────────────────────────────────────────────────────────
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -49,6 +59,7 @@ self=$(readlink -f "$0")
 data=$here/ffds_bench_data.py
 v3src=$here/../ffds-sync-v3.sh
 v4src=$here/../ffds-sync-v4.sh
+v1instrument=$here/../v1-measure/ffds_v1_measure.py
 
 die() { echo "ffds-bench: $*" >&2; exit 1; }
 log() { echo "[$(date '+%F %T')] $*" | tee -a "${outdir:-/dev/null}/run.log" >&2; }
@@ -64,7 +75,7 @@ fi
 
 # ── argument parsing ─────────────────────────────────────────────────────────
 subpath= reps=3 outdir=
-engines=(v3 v4-mount v4-smb)
+engines=(v1 v3 v4-mount v4-smb)
 scenarios=(cold warm incr)
 incrFiles=100
 cachePolicy=drop
@@ -90,7 +101,7 @@ case $reps in ''|*[!0-9]*) die "bad -r" ;; esac
 case $incrFiles in ''|*[!0-9]*) die "bad --incr-files" ;; esac
 case $runTimeout in ''|*[!0-9]*) die "bad --run-timeout" ;; esac
 for e in "${engines[@]}"; do
-    case $e in v3|v4-mount|v4-smb) ;; *) die "bad engine: $e" ;; esac
+    case $e in v1|v3|v4-mount|v4-smb) ;; *) die "bad engine: $e" ;; esac
 done
 for s in "${scenarios[@]}"; do
     case $s in cold|warm|incr) ;; *) die "bad scenario: $s" ;; esac
@@ -120,6 +131,9 @@ for e in "${engines[@]}"; do
     case $e in
         v4-*) command -v rclone >/dev/null || die "rclone missing" ;;
         v3)   command -v rsync  >/dev/null || die "rsync missing (needed for v3)" ;;
+        v1)   command -v rsync >/dev/null || die "rsync missing (needed for v1)"
+              [ -f "$v1Script" ] || die "v1 script missing: $v1Script"
+              [ -f "$v1instrument" ] || die "v1 instrumenter missing: $v1instrument" ;;
     esac
 done
 
@@ -150,14 +164,33 @@ python3 "$data" init-campaign --scratch-base "$scratchBase" \
 
 make_engine_copy() {  # <engine>
     local engine=$1 src dstRootE logDirE out key
+    dstRootE=$scratchBase/$campaign/$engine/DataSet
+    logDirE=$liveLogRoot/$engine
+    out=$outdir/scripts/$engine.sh
+    mkdir -p "$logDirE" || die "cannot create $logDirE"
+    # production dstRoot pre-exists on WEKA; the per-engine scratch root
+    # must too (the sync scripts refuse a missing dataset root)
+    mkdir -p "$dstRootE" || die "cannot create $dstRootE"
+
+    if [ "$engine" = v1 ]; then
+        # legacy script: instrumented copy instead of a config rewrite
+        python3 "$v1instrument" instrument --src "$v1Script" --out "$out" \
+            --diff "$outdir/scripts/v1-instrument.diff" \
+            --src-root "$srcRoot" --dst-root "$dstRootE" \
+            --log-dir "$logDirE" --tag "$campaign" \
+            --events-log "$logDirE/events.log" \
+            > "$outdir/scripts/v1-instrument.json" \
+            || die "refused to instrument $v1Script (not the known v1?)"
+        bash -n "$out" || die "v1 copy fails bash -n"
+        chmod +x "$out"
+        return
+    fi
+
     case $engine in
         v3) src=$v3src ;;
         v4-mount|v4-smb) src=$v4src ;;
     esac
     [ -f "$src" ] || die "engine source missing: $src"
-    dstRootE=$scratchBase/$campaign/$engine/DataSet
-    logDirE=$liveLogRoot/$engine
-    out=$outdir/scripts/$engine.sh
     sed -e "s|^srcRoot=.*|srcRoot=$srcRoot|" \
         -e "s|^dstRoot=.*|dstRoot=$dstRootE|" \
         -e "s|^mountpoints=.*|mountpoints=(${copyMountpoints[*]})|" \
@@ -173,10 +206,6 @@ make_engine_copy() {  # <engine>
     done
     [ "$(grep "^dstRoot=" "$out")" = "dstRoot=$dstRootE" ] \
         || die "$engine copy: dstRoot mismatch"
-    mkdir -p "$logDirE" || die "cannot create $logDirE"
-    # production dstRoot pre-exists on WEKA; the per-engine scratch root
-    # must too (the sync scripts refuse a missing dataset root)
-    mkdir -p "$dstRootE" || die "cannot create $dstRootE"
 }
 for e in "${engines[@]}"; do make_engine_copy "$e"; done
 
@@ -274,12 +303,14 @@ run_scoped() {
     esac
     python3 -c '
 import json, os, sys
-rm, script, sub, run_dir, backend = sys.argv[1:6]
+rm, script, sub, run_dir, backend, engine = sys.argv[1:7]
 env = {"FFDS_V4_BACKEND": backend} if backend else {}
+argv = [script, sub] if engine == "v1" else [script, "one", sub]
 with open(rm, "w") as f:
-    json.dump({"argv": [script, "one", sub], "env": env, "run_dir": run_dir}, f)
+    json.dump({"argv": argv, "env": env, "run_dir": run_dir}, f)
 os.chmod(rm, 0o600)' \
-        "$rm" "$outdir/scripts/$engine.sh" "$subpath" "$runDir" "$backendEnv"
+        "$rm" "$outdir/scripts/$engine.sh" "$subpath" "$runDir" "$backendEnv" \
+        "$engine"
 
     systemd-run --scope --collect --quiet --unit="$unit" \
         "$self" --scope-worker "$rm" \
@@ -405,12 +436,13 @@ for rep in $(seq 1 "$reps"); do
                 || die "select-incr failed (N out of range?)"
         fi
     done
-    mapfile -t order < <(python3 -c '
-import random, sys
-e = sys.argv[2:]
-random.Random(int(sys.argv[1])).shuffle(e)
-print("\n".join(e))' "$rep" "${engines[@]}")
-    log "rep $rep engine order (seed=$rep): ${order[*]}"
+    # Latin-square rotation, not a seeded shuffle: for three engines
+    # random.Random(1), (2) and (3) all yield the SAME permutation, so the
+    # old shuffle never reordered a 3-rep campaign.  Rotating by rep puts
+    # every engine in every position exactly once per ${#engines[@]} reps.
+    rot=$(( (rep - 1) % ${#engines[@]} ))
+    order=("${engines[@]:$rot}" "${engines[@]:0:$rot}")
+    log "rep $rep engine order (latin-square rotation=$rot): ${order[*]}"
     for engine in "${order[@]}"; do
         for scenario in "${scenarios[@]}"; do
             case $scenario in

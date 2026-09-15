@@ -2,7 +2,7 @@
   "annotations": {
     "list": []
   },
-  "description": "Engine comparison for the FFDS sync bench campaigns: v3/rsync vs v4/rclone(mount) vs v4/rclone(smb). Results panels read the per-run gauges of ffds-bench-results (:9760, immutable completed runs -- instant queries only, never rate/increase, scrape time is NOT run time). Live panels read the campaign monitor instances (:9757-9759). fixup time details, CIFS op deltas and cgroup CPU/IO live in the bench CSV/JSON, not here.",
+  "description": "Engine comparison for the FFDS sync bench campaigns: v1/legacy vs v3/rsync vs v4/rclone(mount) vs v4/rclone(smb). Results panels read the per-run gauges of ffds-bench-results (:9760, immutable completed runs -- instant queries only, never rate/increase, scrape time is NOT run time). Live panels read the campaign monitor instances (:9757-9761; v1 reports start/end only, no progress). fixup time details, CIFS op deltas and cgroup CPU/IO live in the bench CSV/JSON, not here.",
   "editable": true,
   "graphTooltip": 1,
   "links": [],
@@ -26,7 +26,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Runs recorded so far in the selected campaign (valid + invalid). A campaign ends at reps x engines x scenarios runs (-r 3 with every engine and scenario = 27). The runner stops at the first invalid run.",
+      "description": "Runs recorded so far in the selected campaign (valid + invalid). A campaign ends at reps x engines x scenarios runs (-r 3 with all four engines and every scenario = 36). The runner stops at the first invalid run.",
       "targets": [
         {
           "refId": "A",
@@ -783,8 +783,8 @@
     },
     {
       "type": "table",
-      "title": "V4 phase split (engine vs fixup seconds)",
-      "description": "v4 only -- v3 has no equivalent phases and is honestly absent.",
+      "title": "Phase split (engine vs fixup seconds)",
+      "description": "v4 (rclone pipeline vs chown/chmod fixup) and v1 (rsync vs its four find sweeps). v3 folds both into one rsync pass and is honestly absent.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

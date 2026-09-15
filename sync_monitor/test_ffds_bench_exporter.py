@@ -130,6 +130,18 @@ class ExporterTest(unittest.TestCase):
         out = self.render()
         self.assertNotIn("ffds_bench_run_warm_files_per_second{", out)
 
+    def test_v1_engine_accepted_with_phase_metrics(self):
+        self.write(make_record(run_id="v1a", engine="v1", scenario="cold",
+                               engine_s=30.0, fixup_s=12.0))
+        body = self.render()
+        self.assertIn('engine="v1"', body)
+        self.assertIn("ffds_bench_exporter_ready 1", body)
+        for metric in ("ffds_bench_run_engine_seconds",
+                       "ffds_bench_run_fixup_seconds"):
+            line = [l for l in body.splitlines()
+                    if l.startswith(metric) and 'engine="v1"' in l]
+            self.assertEqual(len(line), 1, metric)
+
     def test_v4_phase_metrics_present_v3_absent(self):
         self.write(make_record(run_id="m1", engine="v4-mount",
                                engine_s=7.5, fixup_s=1.25))

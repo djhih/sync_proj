@@ -38,7 +38,13 @@ assert_refused() {  # <desc> <cmd...>: expect rc 2 (guard refusal)
 mkdir -p "$SCRATCH/bench" "$SCRATCH/shims" "$SCRATCH/weka/ffds-bench" \
          "$SCRATCH/src/FFDS/A/sub" "$SCRATCH/results" "$SCRATCH/livelog" \
          "$SCRATCH/lock" "$SCRATCH/out" "$SCRATCH/fake"
+mkdir -p "$SCRATCH/v1-measure" "$SCRATCH/v1"
 cp "$repo/bench/ffds_bench_data.py" "$SCRATCH/bench/"
+# the v1 engine: instrumenter next to the bench (../v1-measure) + the
+# legacy script itself as the engine source
+cp "$repo/v1-measure/ffds_v1_measure.py" "$SCRATCH/v1-measure/"
+cp "$repo/test/fixtures/v1/sync_ffds.sh" "$SCRATCH/v1/sync_ffds.sh"
+chmod +x "$SCRATCH/v1/sync_ffds.sh"
 cp "$repo/ffds-sync-v3.sh" "$SCRATCH/ffds-sync-v3.sh"
 cp "$repo/ffds-sync-v4.sh" "$SCRATCH/ffds-sync-v4.sh"
 
@@ -62,6 +68,8 @@ sed -e "s|^scratchBase=.*|scratchBase=$SCRATCH/weka/ffds-bench|" \
     -e "s|^smbRemote=.*|smbRemote=shimremote:share/FFDS|" \
     -e "s|^rcloneConfig=.*|rcloneConfig=$SCRATCH/rclone.conf|" \
     -e "s|^cifsStats=.*|cifsStats=$SCRATCH/fake-cifs|" \
+    -e "s|^v1Script=.*|v1Script=$SCRATCH/v1/sync_ffds.sh|" \
+    -e "s|^syncPattern=.*|syncPattern='ffdsfakesync'|" \
     "$repo/bench/ffds-bench.sh" > "$BENCH"
 chmod +x "$BENCH"
 touch "$SCRATCH/rclone.conf"
@@ -108,6 +116,61 @@ done < <(find "$src" -mindepth 1 -type d -print0)
 printf '{"level":"notice","msg":"stats","stats":{"bytes":%d,"totalBytes":%d,"speed":1000,"eta":0,"transfers":%d,"totalTransfers":%d,"checks":%d,"totalChecks":%d,"deletes":%d,"deletedDirs":0,"errors":0},"time":"T"}\n' \
     "$bytes" "$totalBytes" "$transfers" "$transfers" "$checks" "$checks" "$deletes"
 exit 0
+EOF
+# rsync (v1 engine): a real mini-sync that prints the --stats summary in
+# rsync 3.x wording; FFDS_BENCH_SHIM_RC forces a failure like the rclone shim.
+cat > "$SCRATCH/shims/rsync" <<'EOF'
+#!/usr/bin/env python3
+import os, shutil, stat, sys
+argv = sys.argv[1:]
+if "--version" in argv:
+    print("rsync  version 3.2.7-shim  protocol version 31"); sys.exit(0)
+pos = [a for a in argv if not a.startswith("-")]
+src, dst = pos[-2].rstrip("/"), pos[-1]
+if not os.path.isdir(dst):
+    try:
+        os.mkdir(dst)
+    except OSError as e:
+        print(f'rsync: mkdir "{dst}" failed: {e.strerror}', file=sys.stderr)
+        sys.exit(11)
+name = os.path.basename(src)
+root = os.path.join(dst, name)
+nreg = ndir = created = deleted = xfr = 0
+for cur, dirs, files in os.walk(src):
+    rel = os.path.relpath(cur, src)
+    tdir = os.path.normpath(os.path.join(root, rel))
+    ndir += 1
+    if not os.path.isdir(tdir):
+        os.mkdir(tdir); created += 1
+    shutil.copymode(cur, tdir)
+    for f in sorted(files):
+        s, t = os.path.join(cur, f), os.path.join(tdir, f)
+        nreg += 1
+        ss = os.lstat(s)
+        ts = os.lstat(t) if os.path.lexists(t) else None
+        if ts is None or ts.st_size != ss.st_size or int(ts.st_mtime) != int(ss.st_mtime):
+            created += ts is None
+            shutil.copy2(s, t); xfr += 1
+            print(os.path.normpath(os.path.join(name, rel, f)))
+        else:
+            os.chmod(t, stat.S_IMODE(ss.st_mode))
+    if "--delete" in argv:
+        for extra in sorted(set(os.listdir(tdir)) - set(dirs) - set(files)):
+            p = os.path.join(tdir, extra)
+            shutil.rmtree(p) if os.path.isdir(p) and not os.path.islink(p) else os.unlink(p)
+            deleted += 1
+            print("deleting " + os.path.normpath(os.path.join(name, rel, extra)))
+if "--stats" in argv:
+    print()
+    print(f"Number of files: {nreg + ndir:,} (reg: {nreg:,}, dir: {ndir:,})")
+    print(f"Number of created files: {created:,}")
+    print(f"Number of deleted files: {deleted:,}")
+    print(f"Number of regular files transferred: {xfr:,}")
+    print("Total file size: 12.34K bytes")
+    print("File list generation time: 0.001 seconds")
+    print()
+print("total size is 12.34K  speedup is 9.25")
+sys.exit(int(os.environ.get("FFDS_BENCH_SHIM_RC", "0")))
 EOF
 # systemd-run: strip --scope/--collect/--quiet/--unit=... and exec
 cat > "$SCRATCH/shims/systemd-run" <<'EOF'
@@ -264,8 +327,8 @@ cmp -s "$SCRATCH/results/$camp/runs/$(ls "$SCRATCH/results/$camp/runs" | head -1
     && ok "portable copy byte-identical" || bad "portable copy differs"
 [ ! -d "$SCRATCH/weka/ffds-bench/$camp/v4-mount/DataSet/A" ] \
     && ok "scratch dataset cleaned on success" || bad "scratch left behind"
-assert_match "engine order logged with seed" "$(cat "$out/run.log")" \
-    'engine order \(seed=1\)'
+assert_match "engine order logged with rotation" "$(cat "$out/run.log")" \
+    'engine order \(latin-square rotation=0\)'
 # no-overwrite: replaying the same record must be refused
 firstInput=$(ls "$out"/runs/r1-v4-mount-cold/result-input.json)
 python3 "$data" record --input "$firstInput" --results-root "$SCRATCH/results" \
@@ -299,7 +362,7 @@ assert_match "halt logged" "$(cat "$out2/run.log")" 'HALT: run .* exited 7'
 
 # ── G5: quiet-window preflight ───────────────────────────────────────────────
 echo "G5 interference preflight"
-bash "$SCRATCH/fake/ffds_sync.sh" all & fakePid=$!
+bash "$SCRATCH/fake/ffds_sync.sh" ffdsfakesync & fakePid=$!
 sleep 0.2
 out3=$SCRATCH/out/c3
 runbench "$BENCH" -p A -r 1 -o "$out3" --engines v4-mount --scenarios cold \
@@ -309,6 +372,62 @@ kill "$fakePid" 2>/dev/null; wait "$fakePid" 2>/dev/null
 assert_eq "refuses while another sync runs" "$rc" 1
 assert_match "reason mentions other sync" "$(cat "$SCRATCH/c3.stdout")" \
     'other sync processes running'
+
+# ── G6: the v1 engine (legacy script, instrumented copy) ─────────────────────
+echo "G6 v1 engine"
+out6=$SCRATCH/out/c6
+runbench "$BENCH" -p A -r 1 -o "$out6" --engines v1 \
+    --scenarios cold,warm,incr --incr-files 2 --no-drop-caches \
+    > "$SCRATCH/c6.stdout" 2>&1
+assert_eq "v1 campaign rc" $? 0
+[ -s "$SCRATCH/c6.stdout" ] && [ "$fail" -gt 0 ] && sed 's/^/      /' "$SCRATCH/c6.stdout"
+camp6=$(ls -t "$SCRATCH/results" | head -n 1)
+assert_eq "3 v1 results" "$(ls "$SCRATCH/results/$camp6/runs/"*.json 2>/dev/null | wc -l)" 3
+v1sum=$(python3 - "$SCRATCH/results/$camp6/runs" <<'EOF'
+import json, os, sys
+d = sys.argv[1]
+recs = {r["scenario"]: r for r in
+        (json.load(open(os.path.join(d, f))) for f in sorted(os.listdir(d)))}
+print("valid=" + str(all(r["valid"] == 1 for r in recs.values())),
+      "engines=" + ",".join(sorted({r["engine"] for r in recs.values()})),
+      "backend=" + str(recs["cold"]["backend"]),
+      "xfer=" + "/".join(str(recs[s]["files_transferred"]) for s in ("cold", "warm", "incr")),
+      "deleted=" + str(recs["cold"]["files_deleted"]),
+      "exits=" + str(recs["cold"]["script_exit"]) + str(recs["cold"]["event_exit"]),
+      "split=" + str(recs["cold"]["engine_s"] is not None
+                     and recs["cold"]["fixup_s"] is not None),
+      "rclone=" + str(recs["cold"]["rclone_checks"]))
+for r in recs.values():
+    if r["valid"] != 1:
+        print(r["run_id"], r["invalid_reasons"], file=sys.stderr)
+EOF
+)
+assert_eq "v1 runs: valid, labels, per-scenario transfers, phase split" "$v1sum" \
+    "valid=True engines=v1 backend=None xfer=5/0/2 deleted=0 exits=00 split=True rclone=None"
+assert_match "v1 emitted the bench events" "$(cat "$SCRATCH/livelog/v1/events.log")" \
+    'event=job_stats .*transferred=5'
+[ -f "$out6/scripts/v1-instrument.diff" ] \
+    && ok "instrument diff kept with the campaign" || bad "no v1-instrument.diff"
+
+# ── G7: v1 and v4 in ONE campaign (same manifest, same results dir) ──────────
+echo "G7 v1 + v4 in one campaign"
+out7=$SCRATCH/out/c7
+runbench "$BENCH" -p A -r 1 -o "$out7" --engines v1,v4-mount --scenarios cold \
+    --no-drop-caches > "$SCRATCH/c7.stdout" 2>&1
+assert_eq "mixed campaign rc" $? 0
+camp7=$(ls -t "$SCRATCH/results" | head -n 1)
+mixed=$(python3 - "$SCRATCH/results/$camp7/runs" <<'EOF'
+import json, os, sys
+d = sys.argv[1]
+recs = [json.load(open(os.path.join(d, f))) for f in sorted(os.listdir(d))]
+print("n=%d engines=%s valid=%s manifests=%d" % (
+    len(recs), ",".join(sorted(r["engine"] for r in recs)),
+    all(r["valid"] == 1 for r in recs),
+    len({r["source_manifest_sha256"] for r in recs})))
+EOF
+)
+assert_eq "both engines, one shared source manifest" "$mixed" \
+    "n=2 engines=v1,v4-mount valid=True manifests=1"
 
 echo
 echo "passed=$pass failed=$fail"

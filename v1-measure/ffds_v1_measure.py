@@ -8,9 +8,16 @@ number means the same thing as the bench number with the same field name.
 
 Subcommands:
   instrument     --src F --out F --diff F --src-root D --dst-root D
-                 --log-dir D --tag T
+                 --log-dir D --tag T [--events-log F]
                  make the instrumented copy of v1; refuses when v1 does
-                 not have the known shape (anchor counts)
+                 not have the known shape (anchor counts).  With
+                 --events-log the copy also speaks the bench engine
+                 contract (job_start/job_stats/job_end), so ffds-bench.sh
+                 can drive it as an engine
+  emit-end       --events F --job-log F --subpath S --run N
+                 called BY the instrumented copy at the end of its run:
+                 turns its own markers + rsync --stats summary into the
+                 job_stats and job_end event lines
   init-scratch   --scratch-base D --expect-mount M --id ID
   remove-target  --scratch-base D --expect-mount M --id ID --subpath S
   remove-files   --scratch-base D --expect-mount M --id ID --subpath S --list F
@@ -27,9 +34,11 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import sys
+import time
 
 sys.dont_write_bytecode = True   # never drop a __pycache__ into the bench dir
 sys.path.insert(0, os.environ.get("FFDS_BENCH_DIR") or os.path.join(
@@ -69,10 +78,12 @@ def marker(event, extra=""):
     return f'echo "V1MEASURE event={event}{extra} t=$(date +%s.%N)"'
 
 
-def instrument(text, src_root, dst_root, log_dir, header):
+def instrument(text, src_root, dst_root, log_dir, header, events_log=None):
     """Return the instrumented script text.  Only these lines change:
     the destination variable, the rsync line (source root + --stats),
-    the log path; added: header comments and three marker lines."""
+    the log path; added: header comments, three marker lines and the
+    exit-code propagation (v1 swallows rsync's).  With *events_log*, the
+    copy also emits the bench's job_start/job_stats/job_end events."""
     lines = text.split("\n")
     if not lines or lines[0].strip() != "#!/bin/bash":
         raise Refused("line 1 is not '#!/bin/bash' -- a pasted terminal "
@@ -86,6 +97,7 @@ def instrument(text, src_root, dst_root, log_dir, header):
         return idx[0]
 
     dst_rx = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=" + re.escape(V1_DST_ROOT))
+    i_main = only(lambda l: l.rstrip() == "main() {", "main() {")
     i_dst = only(dst_rx.fullmatch, "<var>=" + V1_DST_ROOT)
     dst_var = dst_rx.fullmatch(lines[i_dst]).group(1)
     i_rsync = only(lambda l: l.lstrip().startswith("rsync ") and V1_SRC in l,
@@ -116,13 +128,64 @@ def instrument(text, src_root, dst_root, log_dir, header):
         out.append(line)
         if i == 0:
             out.extend(header)
+        if i == i_main and events_log:
+            # bench engine contract: the run is announced when it starts
+            out.append('    echo "$(date \'+ts=%s time=%FT%T%z\')'
+                       ' event=job_start subpath=$1 run=$$" >> '
+                       + shlex.quote(events_log))
         if i == finds[-1]:
             out.append(indent(line) + marker("fixup_end"))
+            if events_log:
+                # job_stats + job_end from this run's own markers and the
+                # rsync --stats summary (see cmd_emit_end)
+                # the job log name is built by v1 itself from $1, so it
+                # must stay expandable: double quotes, not shlex.quote
+                out.append('    python3 %s emit-end --events %s'
+                           ' --job-log "%s/rsync-smb${1//\\//_}.log"'
+                           ' --subpath "$1" --run $$'
+                           % (shlex.quote(os.path.abspath(__file__)),
+                              shlex.quote(events_log), log_dir))
+    # v1 hides rsync's exit code (its last command is an echo); the bench
+    # and the measurement both need it.  93 = v1's own pgrep guard skipped
+    # the job, so no rsync ever ran.
+    out += ["", "exit ${v1mRc:-93}"]
     result = "\n".join(out)
     for bad in (V1_DST_ROOT, V1_LOG):
         if bad in result:
             raise Refused(f"production path {bad!r} survived instrumenting")
     return result
+
+
+def cmd_emit_end(a):
+    """Run by the instrumented copy itself (bench engine mode): its
+    markers and rsync summary become the two closing event lines."""
+    markers, stats = parse_job_log(a.job_log)
+    t0, t1, t2 = (_ts(markers, k) for k in ("rsync_start", "rsync_end",
+                                            "fixup_end"))
+    try:
+        rc = int(markers["rsync_end"]["rc"])
+    except (KeyError, ValueError):
+        rc = 93
+    stamp = time.strftime("ts=%s time=%FT%T%z")
+
+    def kv(key, value):
+        return "" if value in (None, "") else f" {key}={value}"
+
+    lines = [stamp + f" event=job_stats subpath={a.subpath} run={a.run}"
+             + "".join(kv(k, stats[v]) for k, v in (
+                 ("files", "rsync_files"), ("created", "files_created"),
+                 ("deleted", "files_deleted"),
+                 ("transferred", "files_transferred"),
+                 ("size", "rsync_total_size"),
+                 ("listgen", "rsync_listgen_s"),
+                 ("speedup", "rsync_speedup")))]
+    lines.append(
+        stamp + f" event=job_end subpath={a.subpath} run={a.run} exit={rc}"
+        + kv("duration", int(t2 - t0) if None not in (t0, t2) else None)
+        + kv("engine_s", round(t1 - t0, 3) if None not in (t0, t1) else None)
+        + kv("fixup", round(t2 - t1, 3) if None not in (t1, t2) else None))
+    with open(a.events, "a") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 def cmd_instrument(a):
@@ -133,7 +196,8 @@ def cmd_instrument(a):
     sha = hashlib.sha256(text.encode()).hexdigest()
     header = [f"# INSTRUMENTED COPY for ffds-v1-measure {a.tag} -- never deploy.",
               f"# original: {a.src} sha256={sha}"]
-    new = instrument(text, a.src_root, a.dst_root, a.log_dir, header)
+    new = instrument(text, a.src_root, a.dst_root, a.log_dir, header,
+                     a.events_log)
     with open(a.out, "w") as f:
         f.write(new)
     os.chmod(a.out, 0o700)
@@ -538,7 +602,13 @@ def main():
     for k in ("--src", "--out", "--diff", "--src-root", "--dst-root",
               "--log-dir", "--tag"):
         sp.add_argument(k, required=True)
+    sp.add_argument("--events-log")   # set = also speak the bench contract
     sp.set_defaults(fn=cmd_instrument)
+
+    sp = sub.add_parser("emit-end")
+    for k in ("--events", "--job-log", "--subpath", "--run"):
+        sp.add_argument(k, required=True)
+    sp.set_defaults(fn=cmd_emit_end)
 
     def guard_parser(name, fn):
         sp = sub.add_parser(name)

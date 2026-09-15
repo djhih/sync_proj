@@ -19,6 +19,9 @@
 | `ffds-sync-v4.sh` | v4/rclone 引擎(mount/smb 雙 backend) |
 | `bench/ffds-bench.sh` | campaign runner(root、手動) |
 | `bench/ffds_bench_data.py` | 路徑防護/manifest/結果層(runner 的工具箱) |
+| `bench/ffds_bench_analyze.py` | campaign 結束後的離線分析(讀 results.csv) |
+| `v1-measure/ffds_v1_measure.py` | v1 引擎的 instrumenter(bench 用它產生 v1 副本) |
+| (不裝、不改)`/usr/local/ffds/sync_ffds.sh` | v1 引擎的來源:bench 只讀它 |
 
 ### sync-host — 監控(安裝到系統)
 
@@ -26,7 +29,7 @@
 | --- | --- | --- |
 | `sync_monitor/ffds_sync_monitor.py` | `/usr/local/bin/ffds-sync-monitor`(0755) | 事件 monitor 本體(9755 既有部署共用同一支) |
 | `sync_monitor/ffds-sync-monitor@.service` | `/etc/systemd/system/` | 多實例 template |
-| `sync_monitor/monitor-env/*.env`(4 檔) | `/etc/ffds-sync-monitor/` | `@v4`=9756、`@bench-{v3,v4-mount,v4-smb}`=9757-9759 |
+| `sync_monitor/monitor-env/*.env`(5 檔) | `/etc/ffds-sync-monitor/` | `@v4`=9756、`@bench-{v3,v4-mount,v4-smb}`=9757-9759、`@bench-v1`=9761 |
 | `sync_monitor/ffds_bench_exporter.py` | `/usr/local/bin/ffds-bench-exporter`(0755) | Results exporter(9760,讀逐輪結果 JSON) |
 | `sync_monitor/ffds-bench-exporter.service` | `/etc/systemd/system/` | 上者的 unit |
 | (手建)`/etc/ffds-rclone.conf` | root:root **0600** | v4-smb 的 SMB 憑證(`rclone obscure`) |
@@ -35,7 +38,7 @@
 
 | repo 路徑 | 用途 |
 | --- | --- |
-| `monitoring/prometheus-ffds-jobs.yml` | 已含六個 ffds job(9755 既有 + 9756–9760);reload 生效 |
+| `monitoring/prometheus-ffds-jobs.yml` | 已含七個 ffds job(9755 既有 + 9756–9761);reload 生效 |
 | `monitoring/ffds-sync-bench.json` | 引擎對比 dashboard(檔案佈署自動載入) |
 
 ### 只在 sync-host 跑一次的驗證件(不安裝)
@@ -44,7 +47,9 @@
 | --- | --- |
 | `test/ffds-sync-v4-local-test.sh` | v4 harness(135 項;含真實 rclone 層) |
 | `test/ffds-sync-local-test.sh` | v3 harness(有 rsync 時 134 項) |
-| `test/ffds-bench-local-test.sh` | bench harness(50 項,sandbox) |
+| `test/ffds-bench-local-test.sh` | bench harness(57 項,sandbox;含 v1 引擎) |
+| `test/ffds-v1-measure-local-test.sh` | v1 獨立量測工具的 harness(65 項,sandbox) |
+| `test/fixtures/v1/sync_ffds.sh` | v1 原文(佔位符版),harness 的 instrument 錨點對照 |
 | `test/fixtures/rclone/generate-fixtures.sh` | 用 sync-host 的 rclone 版本重釘 JSON 契約 fixture |
 
 ## 2. 部署步驟
@@ -54,9 +59,9 @@
 ```bash
 rclone version                     # :smb: 需 >= 1.60;版本 != fixtures/version.txt 就要重釘
 python3 --version; rsync --version | head -1
-df -B1 /mnt/dst-fs                    # 空間:來源 bytes x 3 引擎 x 1.2
+df -B1 /mnt/dst-fs                    # 空間:來源 bytes x 引擎數 x 1.2
 systemctl is-active ffds-sync.timer 2>/dev/null   # 應為 inactive/not-found
-ss -tln | grep -E ':(9756|9757|9758|9759|9760)\b' && echo "port 衝突!" || echo ports-free
+ss -tln | grep -E ':(9756|9757|9758|9759|9760|9761)\b' && echo "port 衝突!" || echo ports-free
 ```
 
 另需向管理者確認(規格 B7):SMB 帳號無鎖定/session 上限政策、
@@ -66,10 +71,11 @@ ss -tln | grep -E ':(9756|9757|9758|9759|9760)\b' && echo "port 衝突!" || echo
 
 ```bash
 cd /root/llt
-bash sendout/test/fixtures/rclone/generate-fixtures.sh   # 版本不同時先重釘
-bash sendout/test/ffds-sync-v4-local-test.sh             # 期望 135/135(rclone 在 PATH)
-bash sendout/test/ffds-sync-local-test.sh                # 期望 134/134(有 rsync)
-bash sendout/test/ffds-bench-local-test.sh               # 期望 50/50
+bash test/fixtures/rclone/generate-fixtures.sh   # 版本不同時先重釘
+bash test/ffds-sync-v4-local-test.sh             # 期望 135/135(rclone 在 PATH)
+bash test/ffds-sync-local-test.sh                # 期望 134/134(有 rsync)
+bash test/ffds-bench-local-test.sh               # 期望 57/57
+bash test/ffds-v1-measure-local-test.sh          # 期望 65/65
 ```
 
 任何一項紅 → 停,先修再繼續(mawk/bash 版本差異最可能在這裡現形)。
@@ -94,7 +100,7 @@ install -m 0644 ffds-sync-monitor@.service ffds-bench-exporter.service /etc/syst
 install -d /etc/ffds-sync-monitor
 install -m 0644 monitor-env/*.env /etc/ffds-sync-monitor/
 systemctl daemon-reload
-systemctl enable --now ffds-sync-monitor@bench-{v3,v4-mount,v4-smb} ffds-bench-exporter
+systemctl enable --now ffds-sync-monitor@bench-{v1,v3,v4-mount,v4-smb} ffds-bench-exporter
 curl -s localhost:9760/metrics | grep ffds_bench_exporter_ready   # 期望 1(空結果也 ready)
 ```
 
@@ -138,7 +144,7 @@ cd /root/llt/bench
 ```bash
 # 分析:outdir 的 SUMMARY.txt / results.csv(可由權威 JSON 重算);
 # 結果回填 bench/ffds-bench.zh-tw.md 的「結果回填」節
-systemctl disable --now ffds-sync-monitor@bench-{v3,v4-mount,v4-smb}
+systemctl disable --now ffds-sync-monitor@bench-{v1,v3,v4-mount,v4-smb}
 # prometheus.yml 刪掉三個 ffds-sync-bench-* job(否則永遠 up==0)並 reload;
 # 9760 與 /var/log/ffds-bench/results 留到分析歸檔完才下線
 ```
@@ -155,7 +161,8 @@ ffds-bench-exporter`、移除 units/env/binaries、刪 `/etc/ffds-rclone.conf`�
 | --- | --- | --- |
 | 9755 | 既有 ffds-sync exporter | 不動 |
 | 9756 | monitor@v4 | v4 煙霧/長期(本輪可不啟) |
-| 9757–9759 | monitor@bench-* | 僅 campaign 期間 |
+| 9757–9759 | monitor@bench-{v3,v4-mount,v4-smb} | 僅 campaign 期間 |
+| 9761 | monitor@bench-v1 | 僅 campaign 期間(v1 只有 start/end,沒有 progress) |
 | 9760 | ffds-bench-exporter | 留到分析歸檔完 |
 
 均為 0.0.0.0 無認證(沿既有 exporter 模式)——網路層是唯一存取控制。

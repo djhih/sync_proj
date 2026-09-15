@@ -4,8 +4,7 @@
 # v1-measure/ffds-v1-measure.sh + ffds_v1_measure.py
 #
 # Everything under one mktemp -d.  The v1 script under test is
-# fixtures/v1/sync_ffds.sh, a copy of sync-host:/usr/local/ffds/sync_ffds.sh
-# (site values replaced by the repo placeholders),
+# fixtures/v1/sync_ffds.sh, a copy of sync-host:/usr/local/ffds/sync_ffds.sh,
 # so the instrument anchors are checked against the real v1 text.
 # rsync is a shim that REALLY syncs (-a/--delete
 # semantics, -p resets modes on every run like the real thing) and prints
@@ -23,7 +22,9 @@ repo=$(cd "$here/.." && pwd)
 SCRATCH=$(mktemp -d)
 bgPids=()
 cleanup() {
-    for p in "${bgPids[@]}"; do kill "$p" 2>/dev/null; done
+    # process GROUPS: a plain kill leaves the fakes' sleep children behind,
+    # and a stray one poisons the next run's preflight
+    for p in "${bgPids[@]}"; do kill -- -"$p" 2>/dev/null; done
     [ -n "${FFDS_TEST_KEEP:-}" ] || rm -rf "$SCRATCH"
 }
 trap cleanup EXIT
@@ -32,7 +33,7 @@ pass=0; fail=0
 ok()  { pass=$((pass + 1)); echo "  ok   $*"; }
 bad() { fail=$((fail + 1)); echo "  FAIL $*"; }
 assert_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1: got '$2', want '$3'"; fi; }
-assert_match() { if grep -qE -- "$3" <<< "$2"; then ok "$1"; else bad "$1: no match for /$3/"; fi; }
+assert_match() { if grep -qE -- "$3" <<< "$2"; then ok "$1"; else bad "$1: no match for /$3/ -- got: $(head -c 300 <<< "$2" | tr '\n' '|')"; fi; }
 jget() {  # <json file> <python expr on d>
     python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2"
 }
@@ -59,6 +60,7 @@ sed -e "s|^v1Script=.*|v1Script=$S/v1/sync_ffds.sh|" \
     -e "s|^lockFile=.*|lockFile=$S/lock/v1m.lock|" \
     -e "s|^cifsStats=.*|cifsStats=$S/fake/cifs-stats|" \
     -e "s|^timeBin=.*|timeBin=$S/shims/time|" \
+    -e "s|^syncPattern=.*|syncPattern='ffdsfakesync'|" \
     "$repo/v1-measure/ffds-v1-measure.sh" > "$M"
 chmod +x "$M"
 for key in v1Script srcRoot scratchBase expectMount lockFile cifsStats timeBin; do
@@ -232,10 +234,13 @@ assert_eq "no production log path in copy" "$(grep -c '/var/log/rsync-smb' "$out
 assert_eq "no production dst in copy" "$(grep -c '/mnt/dst-fs/DataSet' "$out3"/sync_ffds-*.sh)" 0
 assert_match "rsync flags verbatim + --stats" "$(cat "$out3"/sync_ffds-*.sh)" \
     "^    rsync --stats -avzhP --no-owner --no-group --delete $S/src/FFDS/\\\$1 "
+assert_eq "exit code propagated by the copy" \
+    "$(grep -c '^exit \${v1mRc:-93}$' "$out3"/sync_ffds-*.sh)" 1
+assert_eq "standalone copy emits no events" "$(grep -c 'job_start\|emit-end' "$out3"/sync_ffds-*.sh)" 0
 diffMinus=$(grep -c '^-[^-]' "$out3/v1-instrument.diff")
 diffPlus=$(grep -c '^+[^+]' "$out3/v1-instrument.diff")
 assert_eq "diff: only 4 v1 lines changed (dst, rsync, 2x log)" "$diffMinus" 4
-assert_eq "diff: 9 lines in (4 changed + 2 header + 3 markers)" "$diffPlus" 9
+assert_eq "diff: 10 lines in (4 changed + 2 header + 3 markers + exit)" "$diffPlus" 10
 
 # ── T4 depth-3 subpath: parent pre-created, rsync makes the last level ───────
 echo "T4 depth-3 subpath"
@@ -243,33 +248,34 @@ echo "T4 depth-3 subpath"
 assert_eq "rc" "$?" 0
 assert_eq "valid, 1 file" "$(jget "$S/out-t4/runs/r1-cold/result.json" 'd["valid"], d["files_transferred"]')" "(1, 1)"
 
-# ── T5 rsync fails: v1 still exits 0, the run is invalid and the loop halts ──
-echo "T5 rsync exit 23 behind v1's exit 0"
+# ── T5 rsync fails: the copy propagates 23, run invalid, loop halts ──────────
+echo "T5 rsync exit 23 (v1 itself would have exited 0)"
 FFDS_SHIM_RC=23 "$M" -p A -r 1 -o "$S/out-t5" > "$S/t5.log" 2>&1
 assert_eq "rc" "$?" 1
 f=$S/out-t5/runs/r1-cold/result.json
-assert_eq "script 0, rsync 23" "$(jget "$f" 'd["script_exit"], d["rsync_exit"], d["valid"]')" "(0, 23, 0)"
+assert_eq "rsync rc propagated" "$(jget "$f" 'd["script_exit"], d["rsync_exit"], d["valid"]')" "(23, 23, 0)"
 assert_match "halted" "$(cat "$S/t5.log")" "HALT: run r1-cold: v1 did not complete"
 assert_eq "no warm run after the halt" "$(ls "$S/out-t5/runs" | grep -c warm)" 0
 
 # ── T6 v1's own pgrep guard skips the job: no markers -> invalid + halt ──────
 echo "T6 v1 pgrep guard skip"
 printf '#!/bin/bash\nsleep 60\n' > "$S/fake/rsync"; chmod +x "$S/fake/rsync"
-"$S/fake/rsync" A & bgPids+=($!)
+setsid "$S/fake/rsync" A & bgPids+=($!)
 sleep 0.3
 "$M" -p A -r 1 -o "$S/out-t6" --scenarios cold > "$S/t6.log" 2>&1
 assert_eq "rc" "$?" 1
 assert_match "reason" "$(jget "$S/out-t6/runs/r1-cold/result.json" 'd["invalid_reasons"]')" "job did not run"
-kill "${bgPids[-1]}" 2>/dev/null
+assert_eq "guard skip exits 93" "$(jget "$S/out-t6/runs/r1-cold/result.json" 'd["script_exit"]')" 93
+kill -- -"${bgPids[-1]}" 2>/dev/null
 
 # ── T7 another sync running -> preflight refuses ─────────────────────────────
 echo "T7 interference preflight"
-bash -c 'exec -a sync_all.sh sleep 60' & bgPids+=($!)
+setsid bash -c 'exec -a ffdsfakesync sleep 60' & bgPids+=($!)
 sleep 0.3
 out=$("$M" -p A -r 1 -o "$S/out-t7" 2>&1); rc=$?
 assert_eq "rc" "$rc" 1
 assert_match "reason" "$out" "other sync processes running"
-kill "${bgPids[-1]}" 2>/dev/null
+kill -- -"${bgPids[-1]}" 2>/dev/null
 
 echo
 echo "passed=$pass failed=$fail"
