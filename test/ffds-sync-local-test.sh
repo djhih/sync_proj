@@ -433,7 +433,9 @@ wait_until 100 lock_free "$LOCK/ffds-sync-job-A.lock" || bad "A lock never relea
 
 # ── real rsync layer (skips when rsync is absent) ────────────────────────────
 echo "T15 real rsync"
+realRsync=0
 if command -v rsync >/dev/null 2>&1; then
+    realRsync=1   # T12's stats assertions below depend on who wrote A last
     realRun() { env -u JOURNAL_STREAM "$@"; }   # shim not in PATH
     rm -rf "$DST"; mkdir -p "$DST/A"; echo stale > "$DST/A/stale.bin"
     m=$(mark); realRun "$S" one A 2>/dev/null; assert_eq "first run rc 0" $? 0
@@ -451,7 +453,8 @@ fi
 echo "T12 monitor parses everything"
 if [ ! -f "$monitorDir/ffds_sync_monitor.py" ]; then
     echo "  skip monitor gate: sync_monitor is not part of this repo"
-elif FFDS_SYNC_EVENT_LOG=$EV FFDS_T19_STALLED=$t19Stalled python3 - "$monitorDir" <<'EOF'
+elif FFDS_SYNC_EVENT_LOG=$EV FFDS_T19_STALLED=$t19Stalled \
+     FFDS_REAL_RSYNC=$realRsync python3 - "$monitorDir" <<'EOF'
 import os, sys
 sys.path.insert(0, sys.argv[1])
 import ffds_sync_monitor as m
@@ -470,8 +473,15 @@ assert r["?"]["runs"]["90"] == 1 and r["a_b"]["runs"]["90"] == 1
 assert r["/bad"]["runs"]["90"] == 1
 assert r["B/C"]["runs"]["0"] == 2                                                 # T7, T19
 assert r["dup"]["runs"]["0"] == 1 and r["dup"]["runs"]["92"] == 1
-assert r["A"]["stats"]["files_total"] == 1234, r["A"]["stats"]
-assert r["A"]["stats"]["speedup"] == 2345.67, r["A"]["stats"]
+# last_run is keyed by subpath and keeps only the LAST run: on a host with
+# rsync the real layer (T15) ran after the shim, so A's stats are its
+# idempotent second run, not the shim's canned summary.
+if os.environ["FFDS_REAL_RSYNC"] == "1":
+    st = r["A"]["stats"]
+    assert st["files_total"] >= 3 and st["files_transferred"] == 0, st
+else:
+    assert r["A"]["stats"]["files_total"] == 1234, r["A"]["stats"]
+    assert r["A"]["stats"]["speedup"] == 2345.67, r["A"]["stats"]
 ab = dict(s.aborts)
 want = {"mount-missing": 1, "lock-busy": 1, "config-missing": 1, "config-empty": 1,
         "tmp-failed": 1, "signal": 2 + int(os.environ["FFDS_T19_STALLED"])}     # T9, T18 (+T19 on bash 5.2)
