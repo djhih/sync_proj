@@ -174,6 +174,18 @@ cat > "$S/shims/systemctl" <<'EOF'
 #!/bin/bash
 case ${1-} in is-active) echo inactive; exit 3 ;; *) exit 0 ;; esac
 EOF
+# pgrep: real pgrep, filtered to processes that belong to THIS sandbox (their
+# command line contains the scratch path).  v1's own guard is a bare
+# `pgrep -a rsync | grep <subpath>` over every process on the box, so on a
+# busy sync host it sees production rsync and skips the job -- the harness
+# must not depend on the host being idle.  The fakes below live under
+# $SCRATCH, so the interference cases still work.
+cat > "$S/shims/pgrep" <<EOF
+#!/bin/bash
+out=\$($(command -v pgrep) "\$@" 2>/dev/null | grep -F "$S" | grep -vF "/shims/pgrep")
+[ -n "\$out" ] || exit 1
+printf '%s\n' "\$out"
+EOF
 chmod +x "$S"/shims/*
 
 export PATH=$S/shims:$PATH FFDS_V1M_TEST_NONROOT=1
@@ -276,7 +288,7 @@ kill -- -"${bgPids[-1]}" 2>/dev/null
 
 # ── T7 another sync running -> preflight refuses ─────────────────────────────
 echo "T7 interference preflight"
-setsid bash -c 'exec -a ffdsfakesync sleep 60' & bgPids+=($!)
+setsid bash -c "exec -a 'ffdsfakesync $S' sleep 60" & bgPids+=($!)
 sleep 0.3
 out=$("$M" -p A -r 1 -o "$S/out-t7" 2>&1); rc=$?
 assert_eq "rc" "$rc" 1

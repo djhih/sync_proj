@@ -199,6 +199,18 @@ case $1 in
 esac
 exit 0
 EOF
+# pgrep: real pgrep, filtered to processes that belong to THIS sandbox (their
+# command line contains the scratch path).  v1's own guard is a bare
+# `pgrep -a rsync | grep <subpath>` over every process on the box, so on a
+# busy sync host it sees production rsync and skips the job -- the harness
+# must not depend on the host being idle.  The fakes below live under
+# $SCRATCH, so the interference cases still work.
+cat > "$SCRATCH/shims/pgrep" <<EOF
+#!/bin/bash
+out=\$($(command -v pgrep) "\$@" 2>/dev/null | grep -F "$SCRATCH" | grep -vF "/shims/pgrep")
+[ -n "\$out" ] || exit 1
+printf '%s\n' "\$out"
+EOF
 chmod +x "$SCRATCH/shims/"*
 cat > "$SCRATCH/fake/ffds_sync.sh" <<'EOF'
 #!/bin/bash
