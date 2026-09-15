@@ -312,8 +312,12 @@ run FFDS_SHIM_MODE=overpct "$S" one A >/dev/null 2>&1
 assert_eq "out-of-range pct is not fatal" $? 0
 assert_match "over-100% tick keeps bytes, omits pct" "$(since "$m")" \
     'job_progress subpath=A run=[0-9]+ bytes=3000000 speed=1000 eta=0:00:01 xfr=1$'
+# how many 96 (telemetry failure) runs the gate below should see: the
+# unwritable-log case cannot run as root, so it is not counted there either
+want96=4
 if [ "$(id -u)" -eq 0 ]; then
     echo "  skip unwritable-log cases (root ignores file modes)"
+    want96=3
 else
     chmod 555 "$LOG/raw"
     m=$(mark)
@@ -466,7 +470,8 @@ fi
 echo "V10 monitor parses everything"
 if [ ! -f "$monitorDir/ffds_sync_monitor.py" ]; then
     echo "  skip monitor gate: sync_monitor is not part of this repo"
-elif FFDS_SYNC_EVENT_LOG=$EV python3 - "$monitorDir" <<'EOF'
+elif FFDS_SYNC_EVENT_LOG=$EV FFDS_WANT96=$want96 python3 - "$monitorDir" <<'EOF'
+import os
 import sys
 sys.path.insert(0, sys.argv[1])
 import ffds_sync_monitor as m
@@ -481,7 +486,8 @@ runs_A = dict(r["A"]["runs"])
 for code in ("92", "3", "7"):
     assert runs_A.get(code) == 1, (code, runs_A)
 assert runs_A.get("91") == 2, runs_A
-assert runs_A.get("96") == 4, runs_A
+want96 = int(os.environ["FFDS_WANT96"])
+assert runs_A.get("96") == want96, (want96, runs_A)
 assert runs_A.get("143") == 2, runs_A
 assert runs_A.get("0", 0) >= 8, runs_A
 assert r["B/C"]["runs"]["0"] >= 2
@@ -496,7 +502,7 @@ want = {"mount-missing": 1, "lock-busy": 1, "config-missing": 1,
         "config-empty": 1, "config-invalid": 3, "signal": 1}
 assert ab == want, ab
 out = m.render_metrics()
-for needle in ('ffds_sync_runs_total{subpath="A",exit_code="96"} 4',
+for needle in (f'ffds_sync_runs_total{{subpath="A",exit_code="96"}} {want96}',
                'ffds_sync_last_run_exit_code{subpath="L"} 90',
                'ffds_sync_batch_aborts_total{reason="config-invalid"} 3',
                "ffds_sync_log_last_event_timestamp_seconds"):
