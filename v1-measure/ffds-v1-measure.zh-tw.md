@@ -20,11 +20,13 @@ ffds-v1-measure.sh -p <subpath> [-r reps=3] [-o outdir] [-s v1-script]
 | `v1-measure/ffds-v1-measure.sh` | `srcRoot=`、`scratchBase=`、`expectMount=` | `/mnt/src-share/DataSet`、`/mnt/dst-fs/…` |
 | `v1-measure/ffds_v1_measure.py` | `V1_SRC_ROOT =`、`V1_DST_ROOT =` | v1 腳本裡**原樣出現**的來源 / 目的端根目錄(改寫錨點,必須逐字相同) |
 | 同上 | `DATASET =` | `"DataSet"`(須與 `bench/ffds_bench_data.py` 的 `DATASET` 一致) |
+| `test/fixtures/v1/sync_ffds.sh` | 檔內兩個路徑 | harness 用的 v1 原文,不換會因錨點不符而紅 |
 
 ```bash
 sed -i "s|/mnt/src-share|<來源掛載點>|g; s|/mnt/dst-fs|<目的掛載點>|g; \
         s|DataSet|<資料集目錄名>|g" \
-    v1-measure/ffds-v1-measure.sh v1-measure/ffds_v1_measure.py
+    v1-measure/ffds-v1-measure.sh v1-measure/ffds_v1_measure.py \
+    test/fixtures/v1/sync_ffds.sh
 git diff        # 逐行確認只改到預期的 key
 ```
 

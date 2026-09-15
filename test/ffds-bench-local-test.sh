@@ -49,6 +49,12 @@ cp "$repo/ffds-sync-v3.sh" "$SCRATCH/ffds-sync-v3.sh"
 cp "$repo/ffds-sync-v4.sh" "$SCRATCH/ffds-sync-v4.sh"
 
 data=$SCRATCH/bench/ffds_bench_data.py
+# the dataset directory name is a deploy-time placeholder substitution;
+# read it from the module so the harness passes before and after step 0
+DATASET=$(python3 -c '
+import sys; sys.dont_write_bytecode = True; sys.path.insert(0, sys.argv[1])
+from ffds_bench_data import DATASET
+print(DATASET)' "$SCRATCH/bench")
 expectMount=$(python3 -c '
 import sys; sys.path.insert(0, sys.argv[1])
 from ffds_bench_data import mount_point_of
@@ -216,8 +222,8 @@ target=$("${G[@]}" guard-target --scratch-base "$gbase" --expect-mount "$expectM
     --campaign guardtest --engine v4-mount --subpath A)
 assert_eq "guard-target ok" $? 0
 assert_eq "guard-target path" "$target" \
-    "$gbase/guardtest/v4-mount/DataSet/A"
-for badsub in "../../../DataSet" "/abs" "a//b" "a/../b" ".." "trail/"; do
+    "$gbase/guardtest/v4-mount/$DATASET/A"
+for badsub in "../../../$DATASET" "/abs" "a//b" "a/../b" ".." "trail/"; do
     assert_refused "traversal subpath '$badsub' refused" \
         "${G[@]}" guard-target --scratch-base "$gbase" --expect-mount "$expectMount" \
             --campaign guardtest --engine v4-mount --subpath "$badsub"
@@ -240,27 +246,27 @@ assert_refused "campaign root mode != 0700 refused" \
 chmod 700 "$gbase/guardtest"
 
 # symlink ancestor + sentinel: a refused safe-remove must not touch data
-mkdir -p "$SCRATCH/elsewhere/DataSet/A"
-echo precious > "$SCRATCH/elsewhere/DataSet/A/sentinel.txt"
+mkdir -p "$SCRATCH/elsewhere/$DATASET/A"
+echo precious > "$SCRATCH/elsewhere/$DATASET/A/sentinel.txt"
 ln -s "$SCRATCH/elsewhere" "$gbase/guardtest/v4-mount"
 assert_refused "symlink engine ancestor refused" \
     "${G[@]}" safe-remove --scratch-base "$gbase" --expect-mount "$expectMount" \
         --campaign guardtest --engine v4-mount --subpath A
-[ -f "$SCRATCH/elsewhere/DataSet/A/sentinel.txt" ] \
+[ -f "$SCRATCH/elsewhere/$DATASET/A/sentinel.txt" ] \
     && ok "sentinel untouched after refusal" || bad "sentinel destroyed!"
 rm "$gbase/guardtest/v4-mount"
-mkdir -p "$gbase/guardtest/v4-mount/DataSet"
-ln -s "$SCRATCH/elsewhere/DataSet/A" \
-      "$gbase/guardtest/v4-mount/DataSet/A"
+mkdir -p "$gbase/guardtest/v4-mount/$DATASET"
+ln -s "$SCRATCH/elsewhere/$DATASET/A" \
+      "$gbase/guardtest/v4-mount/$DATASET/A"
 assert_refused "symlink target itself refused" \
     "${G[@]}" safe-remove --scratch-base "$gbase" --expect-mount "$expectMount" \
         --campaign guardtest --engine v4-mount --subpath A
-[ -f "$SCRATCH/elsewhere/DataSet/A/sentinel.txt" ] \
+[ -f "$SCRATCH/elsewhere/$DATASET/A/sentinel.txt" ] \
     && ok "sentinel untouched (symlink target)" || bad "sentinel destroyed via symlink!"
 
 # remove-files hygiene
-mkdir -p "$gbase/guardtest/v4-mount/DataSet/B/d"
-echo keep > "$gbase/guardtest/v4-mount/DataSet/B/keep.txt"
+mkdir -p "$gbase/guardtest/v4-mount/$DATASET/B/d"
+echo keep > "$gbase/guardtest/v4-mount/$DATASET/B/keep.txt"
 echo '["../escape"]' > "$SCRATCH/badlist.json"
 assert_refused "remove-files traversal in list refused" \
     "${G[@]}" remove-files --scratch-base "$gbase" --expect-mount "$expectMount" \
@@ -269,7 +275,7 @@ echo '["d"]' > "$SCRATCH/badlist2.json"
 assert_refused "remove-files non-regular refused" \
     "${G[@]}" remove-files --scratch-base "$gbase" --expect-mount "$expectMount" \
         --campaign guardtest --engine v4-mount --subpath B --list "$SCRATCH/badlist2.json"
-[ -f "$gbase/guardtest/v4-mount/DataSet/B/keep.txt" ] \
+[ -f "$gbase/guardtest/v4-mount/$DATASET/B/keep.txt" ] \
     && ok "unlisted file kept" || bad "unlisted file removed"
 
 # ── G3: full mini campaign (v4-mount, cold+warm+incr, 2 reps) ────────────────
@@ -325,7 +331,7 @@ assert_eq "portable copies" "$ncopies" 6
 cmp -s "$SCRATCH/results/$camp/runs/$(ls "$SCRATCH/results/$camp/runs" | head -1)" \
        "$out/completed-results/$(ls "$SCRATCH/results/$camp/runs" | head -1)" \
     && ok "portable copy byte-identical" || bad "portable copy differs"
-[ ! -d "$SCRATCH/weka/ffds-bench/$camp/v4-mount/DataSet/A" ] \
+[ ! -d "$SCRATCH/weka/ffds-bench/$camp/v4-mount/$DATASET/A" ] \
     && ok "scratch dataset cleaned on success" || bad "scratch left behind"
 assert_match "engine order logged with rotation" "$(cat "$out/run.log")" \
     'engine order \(latin-square rotation=0\)'

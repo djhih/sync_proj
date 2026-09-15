@@ -47,6 +47,12 @@ cp "$repo/v1-measure/ffds_v1_measure.py" "$S/v1m/"
 cp "$here/fixtures/v1/sync_ffds.sh" "$S/v1/sync_ffds.sh"
 chmod +x "$S/v1/sync_ffds.sh"
 
+# dataset name and the production destination root are placeholder
+# substitutions at deploy time: read them from the helper, never hardcode
+read -r DATASET V1DST <<< "$(FFDS_BENCH_DIR=$S/bench python3 -c '
+import sys; sys.dont_write_bytecode = True; sys.path.insert(0, sys.argv[1])
+from ffds_v1_measure import DATASET, V1_DST_ROOT
+print(DATASET, V1_DST_ROOT)' "$S/v1m")"
 expectMount=$(python3 -c '
 import sys; sys.dont_write_bytecode = True; sys.path.insert(0, sys.argv[1])
 from ffds_bench_data import mount_point_of
@@ -229,9 +235,9 @@ assert_eq "same manifest definition as the bench" \
 assert_match "job log filed with the run" "$(cat "$out3/runs/r1-cold/job.log")" "^Done\.$"
 assert_eq "csv rows" "$(wc -l < "$out3/results.csv")" 7
 assert_match "summary" "$(cat "$out3/SUMMARY.txt")" "^v1 warm  runs=2 valid=2 .*warm_files_per_s="
-assert_eq "scratch dataset cleaned" "$(find "$S/weka/ffds-v1-measure" -path '*DataSet/*' | wc -l)" 0
+assert_eq "scratch dataset cleaned" "$(find "$S/weka/ffds-v1-measure" -path "*$DATASET/*" | wc -l)" 0
 assert_eq "no production log path in copy" "$(grep -c '/var/log/rsync-smb' "$out3"/sync_ffds-*.sh)" 0
-assert_eq "no production dst in copy" "$(grep -c '/mnt/dst-fs/DataSet' "$out3"/sync_ffds-*.sh)" 0
+assert_eq "no production dst in copy" "$(grep -c "$V1DST" "$out3"/sync_ffds-*.sh)" 0
 assert_match "rsync flags verbatim + --stats" "$(cat "$out3"/sync_ffds-*.sh)" \
     "^    rsync --stats -avzhP --no-owner --no-group --delete $S/src/FFDS/\\\$1 "
 assert_eq "exit code propagated by the copy" \
