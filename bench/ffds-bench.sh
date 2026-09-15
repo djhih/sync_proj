@@ -183,6 +183,14 @@ make_engine_copy() {  # <engine>
             || die "refused to instrument $v1Script (not the known v1?)"
         bash -n "$out" || die "v1 copy fails bash -n"
         chmod +x "$out"
+        # v1 has no mkdir -p and rsync creates only the last path component,
+        # so a subpath deeper than one level needs its parent to exist -- as
+        # it always does in production, where the dataset tree is already
+        # there. Untimed: created once, before any measured run.
+        case $subpath in
+            */*) mkdir -p "$dstRootE/${subpath%/*}" \
+                     || die "cannot create v1 destination parent" ;;
+        esac
         return
     fi
 

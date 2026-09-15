@@ -88,6 +88,9 @@ echo two > "$SCRATCH/src/FFDS/A/f2.txt"
 head -c 4096 /dev/urandom > "$SCRATCH/src/FFDS/A/big.bin"
 echo s1 > "$SCRATCH/src/FFDS/A/sub/s1.txt"
 echo s2 > "$SCRATCH/src/FFDS/A/sub/s2.txt"
+# separate top-level tree: keeps A's file count (5) out of this case
+mkdir -p "$SCRATCH/src/FFDS/D/x/y"
+echo d1 > "$SCRATCH/src/FFDS/D/x/y/d1.txt"
 
 # ── shims ────────────────────────────────────────────────────────────────────
 # rclone: a real mini-sync (size-compare copy + delete-extras) that
@@ -426,6 +429,23 @@ assert_match "v1 emitted the bench events" "$(cat "$SCRATCH/livelog/v1/events.lo
     'event=job_stats .*transferred=5'
 [ -f "$out6/scripts/v1-instrument.diff" ] \
     && ok "instrument diff kept with the campaign" || bad "no v1-instrument.diff"
+
+# ── G6b: v1 on a deep subpath (rsync creates only the last component) ────────
+echo "G6b v1 deep subpath"
+out6b=$SCRATCH/out/c6b
+runbench "$BENCH" -p D/x/y -r 1 -o "$out6b" --engines v1 --scenarios cold \
+    --no-drop-caches > "$SCRATCH/c6b.stdout" 2>&1
+assert_eq "deep subpath campaign rc" $? 0
+camp6b=$(ls -t "$SCRATCH/results" | head -n 1)
+deep=$(python3 - "$SCRATCH/results/$camp6b/runs" <<'EOF'
+import json, os, sys
+d = sys.argv[1]
+r = [json.load(open(os.path.join(d, f))) for f in sorted(os.listdir(d))][0]
+print("valid=%s xfer=%s reasons=%s" % (r["valid"], r["files_transferred"],
+                                       ";".join(r["invalid_reasons"])))
+EOF
+)
+assert_eq "deep subpath run valid" "$deep" "valid=1 xfer=1 reasons="
 
 # ── G7: v1 and v4 in ONE campaign (same manifest, same results dir) ──────────
 echo "G7 v1 + v4 in one campaign"
