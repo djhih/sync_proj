@@ -24,7 +24,7 @@ ffds-v1-measure.sh -p <subpath> [-r reps=3] [-o outdir] [-s v1-script]
 
 ```bash
 sed -i "s|/mnt/src-share|<來源掛載點>|g; s|/mnt/dst-fs|<目的掛載點>|g; \
-        s|DataSet|<資料集目錄名>|g" \
+        s|\bDataSet\b|<資料集目錄名>|g" \
     v1-measure/ffds-v1-measure.sh v1-measure/ffds_v1_measure.py \
     test/fixtures/v1/sync_ffds.sh
 git diff        # 逐行確認只改到預期的 key

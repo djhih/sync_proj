@@ -23,12 +23,17 @@
 | `test/fixtures/v1/sync_ffds.sh` | 檔內的兩個路徑 | 同上 | harness 用的 v1 原文;不換的話 harness 會因錨點不符而紅 |
 | `monitoring/prometheus-ffds-jobs.yml` | `targets:`、`instance:` | `sync-host` | 跑同步/實驗那台機器的主機名 |
 
+**先確認 clone 是乾淨的**:`git clone` 到已存在的非空目錄會失敗,但後面的
+`sed` 還是會照跑,結果就是改到舊目錄裡的檔案。`\b` 是詞界,所以下面這行
+對已經替換過的樹重跑是安全的(沒有 `\b` 時 `DataSet` 會再吃掉一次
+`<資料集目錄名>` 的結尾,變成雙重前綴)。
+
 一行搞定(把 `<...>` 換成實值後執行):
 
 ```bash
 sed -i "s|/mnt/src-share|<來源掛載點>|g; s|/mnt/dst-fs|<目的掛載點>|g; \
-        s|DataSet|<資料集目錄名>|g; s|datasetgrp|<群組名>|g; \
-        s|nas:share1|<remote名:share名>|g" \
+        s|\bDataSet\b|<資料集目錄名>|g; s|\bdatasetgrp\b|<群組名>|g; \
+        s|\bnas:share1\b|<remote名:share名>|g" \
     ffds-sync-v3.sh ffds-sync-v4.sh ffds-sync.service \
     bench/ffds-bench.sh bench/ffds_bench_data.py \
     v1-measure/ffds-v1-measure.sh v1-measure/ffds_v1_measure.py \
