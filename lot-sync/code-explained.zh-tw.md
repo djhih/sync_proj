@@ -89,12 +89,23 @@ dry-run 時,前三種只印 `DRY-RUN | …` 不執行,仍計入 `applied`
 **月份取自檔名裡的日期**(`timeslot.month_of_lrf_name`),不看 `sendout_*`、mtime 或複製時間。
 
 `plan_lrf_sync` 先建立目的地索引(各月份目錄裡每個 `.lrf` 名稱的最新一份),
-再挑出「每個名稱最新的來源」,然後逐檔判斷:
+再為每個名稱挑出一個來源(`_chosen_source_by_name`),然後逐檔判斷。
+挑來源的順序:**不在 fallback 目錄裡的優先**(`--lrf-fallback-dir`,比對路徑上任一層的完整目錄名),
+同一級再比 mtime,最新的勝出。沒設 fallback 目錄時就只比 mtime。
+
+```
+同名來源                          勝出的
+原始檔(舊) + fallback 裡的(新)   原始檔        ← fallback 只在沒有別的選擇時才用
+兩份都在 fallback 裡               比較新的那份
+只有 fallback 裡有                 它(照常同步)
+```
+
 
 ```
 檔名沒有合法日期 ────────────────────────────► ERROR "cannot derive a date from the file name"
 mtime 距現在 < stable_seconds ────────────────► SKIP "still being written"
-同名還有更新的來源 ──────────────────────────► SKIP "a newer source with the same name exists"
+自己在 fallback 目錄、勝出的不在 ─────────────► SKIP "same name exists outside a fallback directory"
+同名的其他來源勝出 ──────────────────────────► SKIP "a newer source with the same name exists"
 目的地沒有這個名稱 ──────────────────────────► COPY_FILE → dst/<檔名月份>/<名稱>
 目的地有,大小相同且 mtime 差 ≤2 秒 ───────────► UP_TO_DATE
 目的地有,且目的地比來源新 ───────────────────► SKIP "destination is newer"

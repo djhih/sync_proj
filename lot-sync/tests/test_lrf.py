@@ -7,12 +7,12 @@ from helpers import NOW, OLD, write
 NAME = "LOTAAAA0001-20260911-172530_pub.lrf"
 
 
-def lane(tmp_path):
-    return LrfLane(str(tmp_path / "src"), str(tmp_path / "dst"))
+def lane(tmp_path, fallback=()):
+    return LrfLane(str(tmp_path / "src"), str(tmp_path / "dst"), tuple(fallback))
 
 
-def plan(tmp_path):
-    return plan_lrf_sync(lane(tmp_path), 60, NOW)
+def plan(tmp_path, fallback=()):
+    return plan_lrf_sync(lane(tmp_path, fallback), 60, NOW)
 
 
 def source(tmp_path, where="sendout_20261105", content="x", mtime=OLD, name=NAME):
@@ -78,3 +78,59 @@ def test_planning_creates_no_directories(tmp_path):
     source(tmp_path)
     plan(tmp_path)
     assert not (tmp_path / "dst").exists()
+
+
+def by_source(actions):
+    return {a.src: a for a in actions}
+
+
+def test_newer_file_in_a_fallback_directory_never_displaces_the_original(tmp_path):
+    original = source(tmp_path, where="sendout_1", content="original, longer", mtime=OLD - 500)
+    derived = source(tmp_path, where="sendout_2/derived", content="cut", mtime=OLD)
+    actions = by_source(plan(tmp_path, fallback=["derived"]))
+    assert actions[original].kind is Kind.COPY_FILE
+    assert (actions[derived].kind, actions[derived].reason) == (
+        Kind.SKIP, "same name exists outside a fallback directory")
+
+
+def test_fallback_file_cannot_replace_the_original_already_at_the_destination(tmp_path):
+    original = source(tmp_path, where="sendout_1", content="original, longer", mtime=OLD - 500)
+    source(tmp_path, where="sendout_2/derived", content="cut", mtime=OLD)
+    destination(tmp_path, content="original, longer", mtime=OLD - 500)
+    actions = plan(tmp_path, fallback=["derived"])
+    assert [a.kind for a in actions if a.kind is Kind.COPY_FILE] == []
+    assert by_source(actions)[original].kind is Kind.UP_TO_DATE
+
+
+def test_without_the_option_the_newest_wins_as_before(tmp_path):
+    source(tmp_path, where="sendout_1", content="original, longer", mtime=OLD - 500)
+    derived = source(tmp_path, where="sendout_2/derived", content="cut", mtime=OLD)
+    assert by_source(plan(tmp_path))[derived].kind is Kind.COPY_FILE
+
+
+def test_file_found_only_in_a_fallback_directory_is_still_synced(tmp_path):
+    only = source(tmp_path, where="sendout_1/a/derived/b")  # any depth below the name
+    [action] = plan(tmp_path, fallback=["derived"])
+    assert (action.src, action.kind) == (only, Kind.COPY_FILE)
+
+
+def test_between_fallback_copies_the_newest_still_wins(tmp_path):
+    source(tmp_path, where="sendout_1/derived", content="a", mtime=OLD - 500)
+    newer = source(tmp_path, where="sendout_2/derived", content="b", mtime=OLD)
+    kinds = {a.src: a.kind for a in plan(tmp_path, fallback=["derived"])}
+    assert kinds[newer] is Kind.COPY_FILE and list(kinds.values()).count(Kind.SKIP) == 1
+
+
+def test_fallback_matches_whole_directory_names_only(tmp_path):
+    source(tmp_path, where="sendout_1", content="a", mtime=OLD - 500)
+    newer = source(tmp_path, where="sendout_2/derived_old", content="b", mtime=OLD)
+    assert by_source(plan(tmp_path, fallback=["derived"]))[newer].kind is Kind.COPY_FILE
+
+
+def test_the_source_root_itself_is_not_a_fallback_directory(tmp_path):
+    root = tmp_path / "derived"
+    path = write(str(root / "sendout_1" / NAME))
+    lane_ = LrfLane(str(root), str(tmp_path / "dst"), ("derived",))
+    original = write(str(root / "sendout_0" / NAME), "longer", OLD - 500)
+    kinds = {a.src: a.kind for a in plan_lrf_sync(lane_, 60, NOW)}
+    assert kinds == {path: Kind.COPY_FILE, original: Kind.SKIP}

@@ -1,10 +1,12 @@
 """Command line: `sync` (one pass or daemon) and `relocate` (fix misplaced entries)."""
 import argparse
 import logging
+import os
 import shutil
 import signal
 import threading
 import time
+from dataclasses import replace
 from typing import Callable, List, Optional
 
 from .config import DEFAULT_STATE_FILE, FolderLane, LrfLane, SyncConfig
@@ -33,6 +35,9 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--folder-dst", help="destination root for those folders")
     sync.add_argument("--lrf-src", help="root holding .lrf files")
     sync.add_argument("--lrf-dst", help="destination root for .lrf files")
+    sync.add_argument("--lrf-fallback-dir", action="append", default=[], metavar="NAME",
+                      help="a .lrf under a directory with this name (any depth) is synced only "
+                           "if no source outside such directories has the same name (repeatable)")
     sync.add_argument("--state-file", default=DEFAULT_STATE_FILE)
     sync.add_argument("--stable-seconds", type=int, default=60,
                       help="ignore data modified within this many seconds (default 60)")
@@ -71,6 +76,14 @@ def configure_logging(log_file: Optional[str], error_log_file: Optional[str],
 def sync_config_from(args: argparse.Namespace, parser: argparse.ArgumentParser) -> SyncConfig:
     folder_lane = _lane(parser, FolderLane, args.folder_src, args.folder_dst)
     lrf_lane = _lane(parser, LrfLane, args.lrf_src, args.lrf_dst)
+    if args.lrf_fallback_dir:
+        if lrf_lane is None:
+            parser.error("--lrf-fallback-dir needs --lrf-src and --lrf-dst")
+        bad = [name for name in args.lrf_fallback_dir
+               if not name or os.sep in name or name in (".", "..")]
+        if bad:
+            parser.error("--lrf-fallback-dir takes a directory name, not a path: {!r}".format(bad[0]))
+        lrf_lane = replace(lrf_lane, fallback_dirs=tuple(args.lrf_fallback_dir))
     if folder_lane is None and lrf_lane is None:
         parser.error("give --folder-src/--folder-dst and/or --lrf-src/--lrf-dst")
     if folder_lane and not args.dry_run and shutil.which(args.rsync) is None:
@@ -106,6 +119,8 @@ def run_sync_pass(config: SyncConfig, state: SyncState, rsync: Rsync) -> Report:
 def run_sync(config: SyncConfig, once: bool, interval: int) -> int:
     state = SyncState.load(config.state_file)
     rsync = Rsync(config.rsync_binary, config.rsync_args)
+    if config.lrf_lane and config.lrf_lane.fallback_dirs:
+        logging.info("LRF FALLBACK DIRS | %s", ", ".join(config.lrf_lane.fallback_dirs))
     if once or config.dry_run:
         return 0 if run_sync_pass(config, state, rsync).ok else 1
     _repeat(lambda: run_sync_pass(config, state, rsync), interval)

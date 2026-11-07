@@ -14,6 +14,7 @@ class FolderLane:
 class LrfLane:
     src_root: str
     dst_root: str
+    fallback_dirs: Tuple[str, ...] = ()  # sources under these names lose to a same-named file elsewhere
 
 
 @dataclass(frozen=True)

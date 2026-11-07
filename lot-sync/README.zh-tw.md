@@ -19,6 +19,7 @@ python3 -m lot_sync --log-file /var/log/lot-sync.log --error-log-file /var/log/l
   sync \
   --folder-src /mnt/dst-fs/DataSetB/SENDOUT --folder-dst /mnt/src-share/OutDir/SENDOUT \
   --lrf-src <LRF 來源> --lrf-dst <LRF 目的> \
+  --lrf-fallback-dir <目錄名> \
   --state-file /var/lib/lot-sync/state.json
 
 # 只想看它會做什麼(什麼都不寫):加 --dry-run
@@ -61,6 +62,15 @@ python3 -m lot_sync relocate --folder-dst /mnt/src-share/OutDir/SENDOUT --lrf-ds
   - 來源比較新 → **原地覆蓋**目的地那份(不論它在哪個月份目錄),並逐筆記錄。
   - 目的地比較新 → 跳過(原因 `destination is newer`)。
   - 多個來源有同名檔 → 只同步最新的那個。
+- **`--lrf-fallback-dir <目錄名>`(可重複)**:放在這個名稱的目錄底下(任何深度)的 `.lrf`,
+  只有在**這類目錄以外沒有同名檔**時才會被同步。
+  - 用途:有些子目錄放的是加工過的版本,檔名跟原始檔一樣、內容不同,而且通常比較新。
+    不設的話,「挑最新的」會讓加工版蓋掉原始檔。
+  - 同名的原始檔存在 → 加工版跳過(原因 `same name exists outside a fallback directory`),
+    即使它比較新;目的地已有的原始檔也不會被它覆蓋。
+  - 只有這類目錄裡才有的檔案 → 照常同步,不會因為放在這裡就被漏掉。
+  - 比對的是**完整的目錄名稱**(`derived` 不會命中 `derived_old`),`--lrf-src` 本身不算。
+  - 啟動時 log 會印一行 `LRF FALLBACK DIRS | …`。
 - 要求檔案 mtime 已超過 `--stable-seconds`。
 
 ### 搬移放錯月份(`relocate`)
