@@ -6,8 +6,9 @@
 - 用法與規則摘要:[README.zh-tw.md](README.zh-tw.md)
 - 路徑佔位符沿用 sync_proj 的其他文件:`/mnt/dst-fs` 是 WEKA、`/mnt/src-share` 是 SMB share,
   跑這支程式的主機稱為 sync-host。lot-id 與檔名都是虛構的範例。
+- 從 log 產生報告、還原腳本的工具與指令:[第 11 節](#11-從-log-產生報告與還原檔)
 
-> 行號對應 2026-11-08 的程式碼(62 項測試通過)。改了程式請順手更新這份文件。
+> 行號對應 2026-11-09 的程式碼(67 項測試通過)。改了程式請順手更新這份文件。
 > 第 4.4 節與第 9 節的邊界情況,都在暫存目錄實際跑過;SIGTERM 的行為是讀程式碼推得的。
 > 文中用到的 Python 寫法(`@dataclass`、`raise … from`、`defaultdict`…)整理在[附錄](#附錄python-寫法小抄)。
 
@@ -83,6 +84,8 @@ cli.py                                  進入點:參數、常駐迴圈,把下�
 | [cli.py](lot_sync/cli.py) | 154 | 參數解析、串接、常駐迴圈、結束碼 |
 
 只用標準函式庫(Python ≥ 3.8);複製資料夾時才需要外部的 `rsync`。
+
+套件之外還有一支 [tools/report.py](tools/report.py),把一次執行的 log 整理成報告,見[第 11 節](#11-從-log-產生報告與還原檔)。
 
 ---
 
@@ -636,6 +639,9 @@ python3 -m lot_sync [--log-file F] [--error-log-file F] [--verbose]  sync     [s
 | `belongs in …, found in …` | MOVE | relocate | 會搬 |
 | 作業系統的錯誤訊息(`[Errno …] …`) | ERROR | 三者 | 讀不到 |
 
+relocate 的兩種原因帶有月份,所以 `RELOCATE |` 摘要會依月份拆成好幾項。例如
+`…belongs in 202601, found in 202604` 和 `…belongs in 202607, found in 202608` 會分開計數,要自己加起來。
+
 ### 7.3 例:讀一次 dry-run 的摘要(數字是示意)
 
 ```
@@ -659,7 +665,7 @@ PASS | would_apply=400 up_to_date=500 skipped=100 [a newer source with the same 
 ## 8. 測試
 
 ```bash
-cd sendout/lot-sync && python3 -m pytest -q     # 62 passed
+cd sendout/lot-sync && python3 -m pytest -q     # 67 passed
 ```
 
 - 全部用 pytest 的 `tmp_path` 暫存目錄。[tests/helpers.py](tests/helpers.py) 的 `write()` 建檔時可以指定 mtime,
@@ -676,6 +682,7 @@ cd sendout/lot-sync && python3 -m pytest -q     # 62 passed
 | [test_executor.py](tests/test_executor.py) | 複製後記住、失敗不記住也不留正式資料夾、dry-run 不動、原地補齊、覆蓋紀錄、error log 去重、重啟後仍記得 |
 | [test_rsync.py](tests/test_rsync.py) | 參數(有 `-u`、沒有 `--delete`)、額外參數的位置、失敗訊息、驗證的判斷 |
 | [test_cli.py](tests/test_cli.py) | `--lrf-fallback-dir` 的傳遞與拒絕 |
+| [test_report.py](tests/test_report.py) | `tools/report.py` 讀得懂 Executor 實際寫出的 log:正式 sync、失敗與中斷、dry-run、relocate、TSV 格式 |
 
 **沒有測到的**:真正的 rsync 執行檔、SMB 掛載、`_repeat` 與訊號、`main()` 從頭到尾、`configure_logging`、
 壞掉的狀態檔。
@@ -690,7 +697,7 @@ cd sendout/lot-sync && python3 -m pytest -q     # 62 passed
 2. **已存在的資料夾是原地更新**,下游如果在更新途中讀取,可能看到不完整的內容。只有新資料夾有 rename 保護。
 3. **一個 lot 只認一個來源**。兩個來源衝突時不挑最新的,只告警。PE 合法地把 lot 搬到別的資料夾,
    也會被當成重複,要人工處理(見 5.4)。
-4. **覆蓋沒有 backup**,只有 `REPLACING` 紀錄。
+4. **覆蓋沒有 backup**,只有 `REPLACING` 紀錄。第一次正式執行前是手動備份的,見 [11.4 A](#114-指令)。
 5. **只比大小和 mtime**,不比內容。
 6. **檔名沒有日期的 `.lrf` 永遠不會被同步**,只在 error log 出現一次。
 7. **relocate 只看根目錄和月份目錄的直接子項目**;目標已存在只跳過(計入 `skipped`,不進 error log)。
@@ -726,9 +733,10 @@ cd sendout/lot-sync && python3 -m pytest -q     # 62 passed
     - 大小相同、目的地舊 1–2 秒的檔案:rsync 會重寫,但清單裡沒有它。
     - 大小不同、目的地新 1–2 秒的檔案:清單裡有它,但 rsync `-u` 不會覆蓋。
 16. **兩條線看目的地的範圍不同**(見 4.4):放錯月份或放在根目錄的項目,可能讓 sync 多複製一份。
-17. **驗證狀態(截至 2026-11-08)**:sync-host 的真實資料已經跑過 `sync` 與 `relocate` 的 dry-run,
-    規劃層的結果都對得上。真的用 rsync 寫 SMB,目前只有舊程式的經驗(同樣的
-    `rsync -a --no-owner --no-group`);新程式要等第一次正式執行後才算驗證。
+17. **驗證狀態(截至 2026-11-09)**:
+    - sync-host 的真實資料跑過 `sync` 與 `relocate` 的 dry-run,規劃層的結果都對得上。
+    - `relocate --apply` 已經在 sync-host 正式執行,沒有失敗。
+    - `sync` 在 2026-11-08 夜間第一次正式執行(`--once`,當時舊程式也還在跑),結果還在整理。
 
 ---
 
@@ -739,7 +747,201 @@ cd sendout/lot-sync && python3 -m pytest -q     # 62 passed
 - **新的 SKIP 原因會直接出現在 `PASS` 摘要的 `[…]` 裡**。原因字串要短、穩定、不帶會變動的內容。
   它也是 `problem_key` 的一部分,改字串會讓已經報過的問題再報一次。
 - **每條新規則都寫一個測試**,先確認拿掉新程式碼時測試會失敗。
+- **改了 log 的格式**(`LOG_FORMAT`、`Action.describe()`、log 前綴),要一起改 [tools/report.py](tools/report.py)。
+  [tests/test_report.py](tests/test_report.py) 會失敗提醒你。
 - **範例只用佔位符**:文件、測試、註解裡的主機名、路徑、share 名稱、lot-id 都用虛構的值。
+
+---
+
+## 11. 從 log 產生報告與還原檔
+
+正式執行的 log 是寫給 grep 用的,直接拿來看或拿來還原都不方便:
+
+- 一個動作會分成好幾行(`START`、`REPLACING`、`DONE`)。
+- `/var/log/lot-sync.log` 會累積每一次執行,dry-run 也算在內。
+
+所以要先把**一次執行**整理成「一個項目一列」的表,才能拿去看、拿去報告,或拿來產生還原腳本。
+
+### 11.1 報告工具:`tools/report.py`
+
+```bash
+python3 tools/report.py <一次執行的 log> <輸出.tsv>
+```
+
+- 只用標準函式庫,也不 import 套件,可以單獨複製到任何地方。
+  部署主機上可以直接存成 `~/lot-sync-report.py`,下面的指令都用這個名字。
+- 輸出 TSV,欄位是 `time  result  kind  src  dst  reason`。
+  空欄位寫成 `-`,因為有些版本的 `column` 會把連續的 tab 合併,欄位就會錯位。
+- 結束時印出每種 `result` 各有幾列。
+
+它認得這些 log 行:
+
+| log 行 | `result` | `src` / `dst` | `reason` |
+| --- | --- | --- | --- |
+| `DONE \| …` | `updated` | 動作的 a / b | relocate 的話是 `belongs in …, found in …` |
+| `START \| …`,之後沒有對應的 `DONE` 或 `FAILED` | `unfinished` | 動作的 a / b | `START logged, no DONE or FAILED` |
+| `REPLACING \| …` | `overwrote` | 所屬動作的來源 / 被覆蓋的檔案 | `舊大小 B @ 時間 -> 新大小 B @ 時間` |
+| `FAILED \| …` | `failed` | 動作的 a / b | 錯誤訊息 |
+| `DUPLICATE LOT \| …` | `duplicate` | 這個來源 / lot 的目的地 | `lot-id also found at: …` 或 `lot-id already synced from: …` |
+| `PLAN FAILED \| …` | `error` | 出問題的路徑 / 通常是 `-` | 原因 |
+| `DRY-RUN \| …` | `would-update` | a / b | |
+| `DRY-RUN REPLACE \| …` | `would-overwrite` | 同 `overwrote` | 同 `overwrote` |
+| `SKIP …`(只有 dry-run 會印) | `skipped` | a / b | 原因 |
+| 其他(`PASS`、`RELOCATE`、`LRF FALLBACK DIRS`…) | 不列出 | | |
+
+解析的方式:
+
+- `LINE`:拆出時間、前綴、內容。前綴不在上表、內容也不是 `SKIP ` 開頭的行,直接跳過。
+- `ACTION`:解析 `Action.describe()` 的格式 `種類  a -> b  (原因)`。
+  `a` 用非貪婪比對,` -> b` 和 `  (原因)` 都可有可無。
+- `FAILURE`:`FAILED` 行的格式是 `describe(): 錯誤`,`b` 取到第一個 `: ` 為止。
+- `NOTE`:`REPLACING` 行是 `describe_replacement` 的格式。
+- `REPLACING` 行本身沒有來源,所以程式會記住最近一個 `START`(dry-run 則是 `DRY-RUN`)的來源。
+- `START` 先記在 `started` 裡,遇到同一組 a / b 的 `DONE` 或 `FAILED` 就拿掉。最後還留著的就是 `unfinished`。
+
+限制:
+
+- **一次只能餵一次執行的 log**。dry-run 每次都會把所有問題重印一遍,好幾次執行混在一起就會重複計算。
+- **`skipped` 只有 dry-run 的 log 才有**,因為正式執行時 SKIP 是 DEBUG 等級。`UP_TO_DATE` 兩種都沒有。
+- **它依賴 log 的格式**(`cli.LOG_FORMAT` 與 `Action.describe()`)。格式改了,
+  [tests/test_report.py](tests/test_report.py) 會失敗,要一起改。
+- **路徑裡如果有 ` -> `、或「兩個空格加左括號」,解析會出錯**。目前的資料沒有這種名稱。
+
+### 11.2 取得「一次執行」的 log
+
+| 方法 | 指令 | 適用 |
+| --- | --- | --- |
+| 執行時順便存一份(最簡單) | `… 2>&1 \| tee ~/<名稱>.log` | 手動跑的 dry-run、relocate |
+| 從累積的 log 抽出最後一次 | `tac /var/log/lot-sync.log \| sed '/LRF FALLBACK DIRS/q' \| tac > ~/lot-sync-first.log` | 有給 `--lrf-fallback-dir` 的 sync。每次執行都以一行 `LRF FALLBACK DIRS` 開頭。**要在下一次執行之前抽** |
+| 從 journal 抽 | `journalctl -u lot-sync-first -o cat > ~/lot-sync-first.log` | 用 `systemd-run --unit=…` 跑的。journald 預設每 30 秒最多收 10000 行,超過的會被丟掉 |
+
+stderr 和 `--log-file` 寫的內容一樣,所以 tee 存下來的跟 log 檔裡的那一段相同。
+`tac` 是倒過來的 `cat`:從檔尾往上讀,讀到第一行 `LRF FALLBACK DIRS`(也就是最後一次執行的開頭)就停,再倒回來。
+
+### 11.3 部署主機上的報告檔一覽(以第一次切換為例)
+
+這些都是照 11.4 的步驟產生的;還沒做的步驟就不會有對應的檔案。
+
+| 檔案 | 內容 | 步驟 |
+| --- | --- | --- |
+| `~/lot-sync-dryrun.log`、`~/lot-sync-dryrun2.log` | 正式執行前的兩次 sync dry-run(第二次有加 fallback 目錄) | A |
+| `/var/backups/lot-sync-pre-replace/` | 第一次正式 sync 前,會被覆蓋的檔案的舊版,保留完整路徑 | A |
+| `~/lot-sync-first.log` | 第一次正式 sync(2026-11-08 夜間)的 log | B |
+| `~/lot-sync-report.tsv` | 同上,一個項目一列 | B |
+| `~/overwrote.txt`、`~/backed-up.txt` | 實際被覆蓋的檔案和已備份的檔案,用來比對有沒有漏 | B |
+| `~/lot-sync-after.log`、`~/lot-sync-after.tsv` | 正式 sync 之後再跑一次 dry-run:現在還沒同步的,包含 SKIP | C |
+| `~/relocate-dryrun.log`、`~/relocate-dryrun2.log` | relocate 之前的 dry-run | D |
+| `~/relocate-apply.log`、`~/relocate-apply.tsv` | `relocate --apply`(2026-11-09)的 log 與逐筆搬移 | D |
+| `~/relocate-undo.sh` | 把 relocate 搬過的全部搬回原位 | D |
+| `/var/backups/lot-sync-relocate-20261109/` | 上面三個 relocate 檔案的備份 | D |
+| `~/relocate-dryrun3.log` | 搬完之後的 dry-run,列出被跳過的項目 | E |
+| `~/relocate-conflicts.txt`、`~/relocate-conflicts-cmp.txt` | 兩個月份都有一份的檔案,以及內容比對結果 | E |
+| `/var/backups/lot-sync-relocate-same/` | 刪掉錯月份那份重複檔之前的備份 | E |
+
+### 11.4 指令
+
+`lot-sync-run.sh` 代表部署時包好路徑參數(來源、目的、log、狀態檔)的 wrapper,
+`~/lot-sync-report.py` 是 11.1 的工具。
+
+**A. 正式 sync 之前:備份會被覆蓋的檔案**
+
+```bash
+sudo lot-sync-run.sh sync --dry-run --lrf-fallback-dir derived 2>&1 \
+  | tee ~/lot-sync-dryrun2.log | grep 'PASS |'
+sudo mkdir -p /var/backups/lot-sync-pre-replace
+grep 'DRY-RUN REPLACE' ~/lot-sync-dryrun2.log | sed -e 's/.*DRY-RUN REPLACE | //' -e 's/: [0-9]* B @ .*//' \
+  | while read -r f; do sudo cp -p --parents "$f" /var/backups/lot-sync-pre-replace/; done
+sudo find /var/backups/lot-sync-pre-replace -type f | wc -l     # 等於 DRY-RUN REPLACE 的行數
+```
+
+- `sed` 把 `DRY-RUN REPLACE | <路徑>: <大小> B @ …` 剪到只剩路徑。
+- `cp -p --parents` 會保留 mtime,並在備份目錄底下重建完整路徑。還原時直接複製回原位就好。
+- 這裡備份的是 dry-run 當下會被覆蓋的檔案。dry-run 之後到正式執行之間如果有新資料進來,
+  要用 B 的最後一步檢查有沒有漏。
+
+**B. 正式 sync 之後:抽出 log、產生報告、確認備份沒漏**
+
+```bash
+tac /var/log/lot-sync.log | sed '/LRF FALLBACK DIRS/q' | tac > ~/lot-sync-first.log
+python3 ~/lot-sync-report.py ~/lot-sync-first.log ~/lot-sync-report.tsv
+
+T=~/lot-sync-report.tsv
+awk -F'\t' 'NR>1{print $2"\t"$3}' $T | sort | uniq -c                    # 每種結果 × 動作各幾個
+awk -F'\t' '$2=="overwrote"{print $5}' $T | sort > ~/overwrote.txt
+sudo find /var/backups/lot-sync-pre-replace -type f | sed 's|^/var/backups/lot-sync-pre-replace||' | sort > ~/backed-up.txt
+comm -23 ~/overwrote.txt ~/backed-up.txt                                  # 被覆蓋但沒備份到的;應該沒有輸出
+```
+
+看表:
+
+```bash
+column -t -s $'\t' ~/lot-sync-report.tsv | less -S                                                   # 全部
+awk -F'\t' 'NR==1 || $2=="updated"' ~/lot-sync-report.tsv | column -t -s $'\t' | less -S             # 只看成功的
+awk -F'\t' 'NR==1 || ($2!="updated" && $2!="overwrote")' ~/lot-sync-report.tsv | column -t -s $'\t' | less -S   # 只看沒成功的
+```
+
+**C. 現在還有什麼沒同步**
+
+```bash
+sudo lot-sync-run.sh sync --dry-run --lrf-fallback-dir derived 2>&1 \
+  | tee ~/lot-sync-after.log | grep 'PASS |'
+python3 ~/lot-sync-report.py ~/lot-sync-after.log ~/lot-sync-after.tsv
+```
+
+這次 dry-run 也會寫進 `/var/log/lot-sync.log`,而且同樣以 `LRF FALLBACK DIRS` 開頭。
+所以 **B 的 `tac` 那一步要在 C 之前做**,不然抽到的會是這次 dry-run。
+
+**D. relocate:搬移、報告、還原腳本**
+
+```bash
+sudo lot-sync-run.sh relocate --dry-run 2>&1 | tee ~/relocate-dryrun2.log | grep 'RELOCATE |'
+sudo lot-sync-run.sh relocate --apply   2>&1 | tee ~/relocate-apply.log   | grep 'RELOCATE |'
+python3 ~/lot-sync-report.py ~/relocate-apply.log ~/relocate-apply.tsv
+awk -F'\t' '$2=="updated" && $3=="MOVE"{printf "mv -n \"%s\" \"%s\"\n", $5, $4}' ~/relocate-apply.tsv > ~/relocate-undo.sh
+wc -l < ~/relocate-undo.sh                                                # 等於 RELOCATE 摘要的 applied
+sudo mkdir -p /var/backups/lot-sync-relocate-20261109
+sudo cp -p ~/relocate-apply.log ~/relocate-apply.tsv ~/relocate-undo.sh /var/backups/lot-sync-relocate-20261109/
+```
+
+還原腳本:
+
+- 每一行是 `mv -n "新位置" "舊位置"`,也就是把 TSV 的 `dst` 搬回 `src`。
+- `-n`:舊位置已經有同名檔就不搬,不會覆蓋。還原後用 `relocate --dry-run` 確認一下。
+- 全部還原:`sudo bash ~/relocate-undo.sh`。只還原一部分:`grep '/202608/' ~/relocate-undo.sh | sudo bash`。
+- 還原之後檔案回到錯的月份,下次跑 relocate 又會被搬一次。新程式的同步不受影響,因為它的索引會看所有月份。
+- 路徑裡如果有 `"`、`$` 或反引號,這個 awk 產生的指令會壞掉。目前的檔名沒有。
+
+**E. 兩個月份都有一份的檔案**
+
+```bash
+sudo lot-sync-run.sh relocate --dry-run 2>&1 | tee ~/relocate-dryrun3.log | grep 'RELOCATE |'     # 搬完後應該是 would_apply=0
+grep 'target already exists' ~/relocate-dryrun3.log | sed -E 's/.*\| SKIP +//; s/  \(.*//' > ~/relocate-conflicts.txt
+while IFS= read -r line; do
+  a=${line%% -> *}; b=${line#* -> }
+  if sudo cmp -s "$a" "$b"; then printf 'SAME\t%s\t%s\n' "$a" "$b"; else printf 'DIFF\t%s\t%s\n' "$a" "$b"; fi
+done < ~/relocate-conflicts.txt > ~/relocate-conflicts-cmp.txt
+cut -f1 ~/relocate-conflicts-cmp.txt | sort | uniq -c
+```
+
+- 正式執行不會逐筆記下 SKIP,所以清單要從 dry-run 拿。
+- `${line%% -> *}` 是 bash 的字串截斷:去掉第一個 ` -> ` 和它後面的全部,剩下錯月份那份的路徑。
+  `${line#* -> }` 去掉第一個 ` -> ` 和它前面的全部,剩下正確月份那份的路徑。
+- `cmp -s` 逐 byte 比對兩個檔案,不印任何東西,只用結束碼表示一不一樣。
+
+內容一樣(SAME)的,錯月份那份是多餘的。先備份,再刪掉:
+
+```bash
+sudo mkdir -p /var/backups/lot-sync-relocate-same
+grep '^SAME' ~/relocate-conflicts-cmp.txt | cut -f2 | while IFS= read -r f; do
+  sudo cp -p --parents "$f" /var/backups/lot-sync-relocate-same/ && sudo rm "$f"
+done
+```
+
+內容不一樣(DIFF)的先不要動,列出大小和時間交給資料負責人決定。在那之前,新程式只會更新兩份裡比較新的那份:
+
+```bash
+grep '^DIFF' ~/relocate-conflicts-cmp.txt | while IFS=$'\t' read -r _ a b; do sudo stat -c '%s B  %y  %n' "$a" "$b"; echo; done
+```
 
 ---
 
