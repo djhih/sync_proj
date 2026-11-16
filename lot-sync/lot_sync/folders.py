@@ -18,7 +18,7 @@ from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
 from .config import FolderLane
-from .plan import Action, Kind
+from .plan import MISSING_DESTINATION, Action, Kind
 from .fileinfo import describe_replacement, is_replacement
 from .scan import ScanError, file_infos, find_timeslot_dirs, measure_tree
 from .state import SyncState
@@ -27,6 +27,8 @@ from .timeslot import month_of_timeslot
 
 def plan_folder_sync(lane: FolderLane, state: SyncState,
                      stable_seconds: int, now: float) -> List[Action]:
+    if not os.path.isdir(lane.dst_root):
+        return [Action(Kind.ERROR, lane.dst_root, reason=MISSING_DESTINATION)]
     try:
         sources = find_timeslot_dirs(lane.src_root)
     except ScanError as error:

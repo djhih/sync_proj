@@ -86,7 +86,10 @@ python3 -m lot_sync relocate --folder-dst /mnt/src-share/OutDir/SENDOUT --lrf-ds
   問題消失後再出現才會再寫。已寫過的問題記在 `--state-file`,重啟後不會重複。
   所以 error log 是歷史紀錄;問題是否還在,看一般 log 摘要裡的 `duplicates=` / `failed=`。
 - `--dry-run` 會把所有問題都印出來,而且不記進狀態檔。
-- 重複 lot 或失敗都不會讓常駐程式退出;`--once` 在有 duplicates 或 failed 時結束碼為 1。
+- 重複 lot 或失敗都不會讓常駐程式退出。`--once` 的結束碼:0 = 沒有問題;3 = 跑完了,但還有重複的 lot
+  或檔名沒日期的 `.lrf` 要人處理;4 = 有東西讀不到、複製或搬移失敗(下一輪重試)。
+- **目的地根目錄(`--folder-dst`、`--lrf-dst`)必須已經存在**。不存在時整條線不做,並回報
+  `destination root does not exist; is the share mounted?`:share 沒掛載時,寫進去的東西其實是寫在本機硬碟。
 
 ## 相對舊程式修掉的問題
 
@@ -113,12 +116,13 @@ python3 -m lot_sync relocate --folder-dst /mnt/src-share/OutDir/SENDOUT --lrf-ds
 1. 先備份現有的狀態與 log,**不要**先停舊程式。
 2. 跑 `relocate --dry-run`,確認清單合理,再 `--apply`。
 3. 跑 `sync --once --dry-run`,看 `would_apply`、`REPLACE` 與 `skipped [...]` 的原因分佈。
-4. 停掉 `copy_folder.py` / `copy_lrf.py`(兩套**不要同時**寫同一個目的地),啟動新的。
+4. 停掉 `copy_folder.py` / `copy_lrf.py`,啟動新的常駐。常駐用 systemd timer 每 5 分鐘跑一次 `--once`,
+   檔案在 [deploy/](deploy/),步驟見 [code-explained 第 12.5 節](code-explained.zh-tw.md#125-常駐systemd-timer)。
 
 ## 測試
 
 ```bash
-cd sendout/lot-sync && python3 -m pytest -q    # 48 項,用暫存目錄與假的 rsync
+cd sendout/lot-sync && python3 -m pytest -q    # 75 項,用暫存目錄與假的 rsync
 ```
 
 **尚未做的**:沒有用真的 rsync、真的 SMB 掛載、或 sync-host 上的資料跑過(這台筆電沒有 rsync;

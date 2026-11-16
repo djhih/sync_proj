@@ -29,3 +29,32 @@ def test_fallback_dir_without_an_lrf_lane_is_refused():
 def test_fallback_dir_must_be_a_plain_directory_name(bad):
     with pytest.raises(SystemExit):
         config_of(*LRF, "--lrf-fallback-dir", bad)
+
+
+def run_main(tmp_path, *argv):
+    from lot_sync.cli import main
+    return main(["sync", "--dry-run", "--state-file", str(tmp_path / "state.json"), *argv])
+
+
+def test_exit_status_is_0_when_nothing_is_waiting(tmp_path):
+    from helpers import destination_root, write
+    write(str(tmp_path / "src" / "20261030-120000" / "a.bin"))
+    assert run_main(tmp_path, "--folder-src", str(tmp_path / "src"),
+                    "--folder-dst", destination_root(tmp_path)) == 0
+
+
+def test_exit_status_3_means_finished_but_a_person_is_needed(tmp_path):
+    from helpers import destination_root, write
+    write(str(tmp_path / "src" / "s1" / "20261030-120000" / "a.bin"))
+    write(str(tmp_path / "src" / "s2" / "20261030-120000" / "a.bin"))   # duplicate lot-id
+    write(str(tmp_path / "src" / "summary.lrf"))                         # undated .lrf
+    dst = destination_root(tmp_path)
+    assert run_main(tmp_path, "--folder-src", str(tmp_path / "src"), "--folder-dst", dst,
+                    "--lrf-src", str(tmp_path / "src"), "--lrf-dst", dst) == 3
+
+
+def test_exit_status_4_means_something_could_not_be_read_or_written(tmp_path):
+    from helpers import write
+    write(str(tmp_path / "src" / "20261030-120000" / "a.bin"))
+    assert run_main(tmp_path, "--folder-src", str(tmp_path / "src"),
+                    "--folder-dst", str(tmp_path / "unmounted")) == 4

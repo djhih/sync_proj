@@ -15,6 +15,13 @@ def write(path, content="x", mtime=OLD):
     return path
 
 
+def destination_root(tmp_path):
+    """The destination root exists in a real deployment (the mounted share's directory)."""
+    root = tmp_path / "dst"
+    root.mkdir(exist_ok=True)
+    return str(root)
+
+
 def timestamp_of(year, month, day):
     return datetime(year, month, day, 12, 0).timestamp()
 

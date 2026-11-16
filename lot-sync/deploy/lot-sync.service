@@ -1,0 +1,49 @@
+[Unit]
+Description=lot-sync: one pass of lot folders and .lrf files into the SMB share
+Documentation=file:/opt/lot-sync/code-explained.zh-tw.md
+# Deploy target: /etc/systemd/system/lot-sync.service
+# Started by lot-sync.timer. 'systemctl start lot-sync' runs one pass by hand
+# and returns when it has finished.
+#
+# Both mounts are required: if one is absent the unit does not start at all
+# ('journalctl -u lot-sync' says why). The wrapper checks them again, and the
+# program refuses to plan into a destination root that does not exist.
+RequiresMountsFor=/mnt/dst-fs/DataSetB/SENDOUT /mnt/src-share/OutDir/SENDOUT
+
+[Service]
+Type=oneshot
+# The wrapper holds the paths and the fallback directories. --timeout makes an
+# rsync that has moved no data for 30 minutes give up (exit 30, retried next pass).
+ExecStart=/usr/local/sbin/lot-sync-run.sh sync --once --rsync-arg=--timeout=1800
+# 3 = the pass finished but duplicates or undated .lrf are waiting for a person.
+# That is the normal state while such items exist, so it is not a failure.
+# 'failed' therefore means: crash (1), refused by the wrapper (1, 2 or 75),
+# or a read, copy or move that failed (4).
+SuccessExitStatus=3
+# A pass normally takes minutes. On expiry systemd sends SIGTERM to the whole
+# cgroup: python and rsync stop at once; a new folder stays in .<name>.partial
+# and the next pass continues it.
+TimeoutStartSec=6h
+TimeoutStopSec=2min
+# No Restart=: the timer starts the next pass anyway.
+Restart=no
+
+# Yield to interactive work on this host.
+CPUWeight=30
+IOWeight=30
+Nice=10
+
+# Sandbox. strict = the whole tree is read-only except the paths below, so the
+# source can never be written.
+#   destination       the only place data is written
+#   StateDirectory    /var/lib/lot-sync (state.json)
+#   the two log files must exist before the first start (see logrotate below)
+#   /run/lock         the wrapper's lock file
+ProtectSystem=strict
+ReadWritePaths=/mnt/src-share/OutDir/SENDOUT /var/log/lot-sync.log /var/log/lot-sync.error.log /run/lock
+StateDirectory=lot-sync
+PrivateTmp=yes
+ProtectHome=true
+NoNewPrivileges=true
+
+# No [Install]: this unit is started by lot-sync.timer or by hand.

@@ -2,15 +2,15 @@ import os
 
 from lot_sync.config import FolderLane
 from lot_sync.folders import plan_folder_sync
-from lot_sync.plan import Kind
+from lot_sync.plan import MISSING_DESTINATION, Kind
 from lot_sync.scan import measure_tree
 from lot_sync.state import SyncState
 
-from helpers import NOW, OLD, write
+from helpers import NOW, OLD, destination_root, write
 
 
 def lane(tmp_path):
-    return FolderLane(str(tmp_path / "src"), str(tmp_path / "dst"))
+    return FolderLane(str(tmp_path / "src"), destination_root(tmp_path))
 
 
 def plan(tmp_path, state=None):
@@ -123,3 +123,25 @@ def test_identical_destination_has_nothing_to_replace(tmp_path):
     make_folder(tmp_path, "sendout_1/20261030-120000")
     write(str(tmp_path / "dst" / "202610" / "20261030-120000" / "a.bin"))
     assert plan(tmp_path)[0].notes == ()
+
+
+def test_missing_destination_root_plans_nothing(tmp_path):
+    make_folder(tmp_path, "sendout_1/20261030-120000")
+    missing = FolderLane(str(tmp_path / "src"), str(tmp_path / "mnt" / "SENDOUT"))
+    [action] = plan_folder_sync(missing, SyncState.empty(str(tmp_path / "state.json")), 60, NOW)
+    assert (action.kind, action.src, action.reason) == (Kind.ERROR, missing.dst_root, MISSING_DESTINATION)
+
+
+def test_unreadable_file_in_a_lot_is_an_error_for_that_lot_only(tmp_path, monkeypatch):
+    make_folder(tmp_path, "sendout_1/20261030-120000")
+    make_folder(tmp_path, "sendout_1/20261031-120000")
+    real_lstat = os.lstat
+
+    def lstat(path, *args, **kwargs):
+        if "20261030-120000" in str(path):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", lstat)
+    actions = {os.path.basename(a.src): a.kind for a in plan(tmp_path)}
+    assert actions == {"20261030-120000": Kind.ERROR, "20261031-120000": Kind.COPY_TREE}

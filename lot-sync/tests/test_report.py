@@ -13,7 +13,7 @@ from lot_sync.lrf import plan_lrf_sync
 from lot_sync.relocate import plan_relocation
 from lot_sync.state import SyncState
 
-from helpers import NOW, OLD, FakeRsync, write
+from helpers import NOW, OLD, FakeRsync, destination_root, write
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "tools"))
 import report  # noqa: E402
@@ -78,7 +78,7 @@ def test_a_real_sync_run_becomes_one_row_per_outcome(tmp_path):
 def test_failed_and_interrupted_actions_are_listed(tmp_path):
     write(str(tmp_path / "src" / "20260815-101010" / "a.bin"))
     state = SyncState.empty(str(tmp_path / "state.json"))
-    plan = plan_folder_sync(FolderLane(str(tmp_path / "src"), str(tmp_path / "dst")), state, 60, NOW)
+    plan = plan_folder_sync(FolderLane(str(tmp_path / "src"), destination_root(tmp_path)), state, 60, NOW)
     log = str(tmp_path / "run.log")
     with logged_to(log):
         Executor(False, FakeRsync(fail_copy=True), state).run(plan)

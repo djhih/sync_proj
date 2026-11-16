@@ -1,14 +1,16 @@
+import os
+
 from lot_sync.config import LrfLane
 from lot_sync.lrf import plan_lrf_sync
-from lot_sync.plan import Kind
+from lot_sync.plan import MISSING_DESTINATION, Kind
 
-from helpers import NOW, OLD, write
+from helpers import NOW, OLD, destination_root, write
 
 NAME = "LOTAAAA0001-20260911-172530_pub.lrf"
 
 
 def lane(tmp_path, fallback=()):
-    return LrfLane(str(tmp_path / "src"), str(tmp_path / "dst"), tuple(fallback))
+    return LrfLane(str(tmp_path / "src"), destination_root(tmp_path), tuple(fallback))
 
 
 def plan(tmp_path, fallback=()):
@@ -77,7 +79,7 @@ def test_other_extensions_are_ignored(tmp_path):
 def test_planning_creates_no_directories(tmp_path):
     source(tmp_path)
     plan(tmp_path)
-    assert not (tmp_path / "dst").exists()
+    assert os.listdir(str(tmp_path / "dst")) == []
 
 
 def by_source(actions):
@@ -130,7 +132,14 @@ def test_fallback_matches_whole_directory_names_only(tmp_path):
 def test_the_source_root_itself_is_not_a_fallback_directory(tmp_path):
     root = tmp_path / "derived"
     path = write(str(root / "sendout_1" / NAME))
-    lane_ = LrfLane(str(root), str(tmp_path / "dst"), ("derived",))
+    lane_ = LrfLane(str(root), destination_root(tmp_path), ("derived",))
     original = write(str(root / "sendout_0" / NAME), "longer", OLD - 500)
     kinds = {a.src: a.kind for a in plan_lrf_sync(lane_, 60, NOW)}
     assert kinds == {path: Kind.COPY_FILE, original: Kind.SKIP}
+
+
+def test_missing_destination_root_is_an_error_not_an_empty_index(tmp_path):
+    source(tmp_path)
+    missing = LrfLane(str(tmp_path / "src"), str(tmp_path / "mnt" / "SENDOUT"))
+    [action] = plan_lrf_sync(missing, 60, NOW)
+    assert (action.kind, action.src, action.reason) == (Kind.ERROR, missing.dst_root, MISSING_DESTINATION)

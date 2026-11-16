@@ -1,0 +1,47 @@
+#!/bin/bash
+# lot-sync wrapper: every run uses the same paths, logs and state file.
+#
+# Fill in the values below, then install the filled-in copy as root:
+#   bash -n lot-sync-run.sh && sudo install -m 755 -o root -g root lot-sync-run.sh /usr/local/sbin/
+# Real names live only in the installed copy, outside the repo. Never commit it.
+
+FOLDER_SRC=/mnt/dst-fs/DataSetB/SENDOUT
+FOLDER_DST=/mnt/src-share/OutDir/SENDOUT
+LRF_SRC=/mnt/dst-fs/DataSetB/SENDOUT
+LRF_DST=/mnt/src-share/OutDir/SENDOUT
+LRF_FALLBACK_DIRS=(derived)                    # .lrf under these directory names never displace an original
+REQUIRED_MOUNTS=(/mnt/dst-fs /mnt/src-share)   # find each with: findmnt -n -o TARGET -T <path above>
+STATE=/var/lib/lot-sync/state.json
+LOGDIR=/var/log
+APP_DIR=/opt/lot-sync                          # root-owned copy of the lot-sync directory
+LOCK=/run/lock/lot-sync.lock                   # one run at a time: the timer's, a manual one, or relocate
+
+# An unmounted share looks like an empty local directory; writing there would be silently lost.
+for mount in "${REQUIRED_MOUNTS[@]}"; do
+  mountpoint -q "$mount" || { echo "lot-sync: $mount is not mounted; refusing to run" >&2; exit 1; }
+done
+cd "$APP_DIR" || exit 1
+
+# Two runs at once would both copy the same lots and overwrite each other's state file.
+# The lock is held by file descriptor 9, which python (and its rsync children) inherit
+# through exec, so it is released only when the run ends.
+exec 9>"$LOCK" || exit 1
+flock -n 9 || { echo "lot-sync: another run holds $LOCK; try again when it has finished" >&2; exit 75; }
+
+# Global options must come before the subcommand, so they are placed here.
+common=(--log-file "$LOGDIR/lot-sync.log" --error-log-file "$LOGDIR/lot-sync.error.log")
+if [ "$1" = --verbose ]; then common+=(--verbose); shift; fi
+fallback=()
+for name in "${LRF_FALLBACK_DIRS[@]}"; do fallback+=(--lrf-fallback-dir "$name"); done
+
+cmd=$1; shift
+case $cmd in
+  sync)     exec python3 -m lot_sync "${common[@]}" sync \
+              --folder-src "$FOLDER_SRC" --folder-dst "$FOLDER_DST" \
+              --lrf-src "$LRF_SRC" --lrf-dst "$LRF_DST" --state-file "$STATE" \
+              "${fallback[@]}" "$@" ;;
+  relocate) exec python3 -m lot_sync "${common[@]}" relocate \
+              --folder-dst "$FOLDER_DST" --lrf-dst "$LRF_DST" "$@" ;;
+  *) echo "usage: $0 [--verbose] sync [--once] [--dry-run] | [--verbose] relocate --dry-run|--apply" >&2
+     exit 2 ;;
+esac

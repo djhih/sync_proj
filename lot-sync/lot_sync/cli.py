@@ -19,6 +19,17 @@ from .state import SyncState
 
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(message)s"
 
+# Exit status of --once, --dry-run and relocate. 1 is left to Python (uncaught exception)
+# and 2 to argparse (bad options).
+EXIT_OK = 0
+EXIT_NEEDS_PERSON = 3  # the pass finished; duplicates or data errors are waiting for a person
+EXIT_IO_FAILED = 4     # a read, copy or move failed; it is retried on the next pass
+
+
+def exit_code(report: Report) -> int:
+    if report.io_failed:
+        return EXIT_IO_FAILED
+    return EXIT_OK if report.ok else EXIT_NEEDS_PERSON
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -122,7 +133,7 @@ def run_sync(config: SyncConfig, once: bool, interval: int) -> int:
     if config.lrf_lane and config.lrf_lane.fallback_dirs:
         logging.info("LRF FALLBACK DIRS | %s", ", ".join(config.lrf_lane.fallback_dirs))
     if once or config.dry_run:
-        return 0 if run_sync_pass(config, state, rsync).ok else 1
+        return exit_code(run_sync_pass(config, state, rsync))
     _repeat(lambda: run_sync_pass(config, state, rsync), interval)
     return 0
 
@@ -142,7 +153,7 @@ def run_relocate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
     report = Executor(dry_run=args.dry_run).run(
         plan_relocation(args.folder_dst, args.lrf_dst))
     logging.info("RELOCATE | %s", report.summary(args.dry_run))
-    return 0 if report.ok else 1
+    return exit_code(report)
 
 
 def main(argv: Optional[List[str]] = None) -> int:

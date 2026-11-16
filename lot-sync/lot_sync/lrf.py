@@ -16,7 +16,7 @@ from typing import Dict, List, Set, Tuple
 
 from .config import LrfLane
 from .fileinfo import FileInfo, describe_replacement, is_newer, is_same_file
-from .plan import Action, Kind
+from .plan import MISSING_DESTINATION, UNDATED_LRF, Action, Kind
 from .scan import ScanError, find_lrf_files, is_lrf_name, list_dir, month_dirs
 from .timeslot import month_of_lrf_name
 
@@ -28,6 +28,8 @@ class Existing:
 
 
 def plan_lrf_sync(lane: LrfLane, stable_seconds: int, now: float) -> List[Action]:
+    if not os.path.isdir(lane.dst_root):
+        return [Action(Kind.ERROR, lane.dst_root, reason=MISSING_DESTINATION)]
     try:
         sources = find_lrf_files(lane.src_root)
         existing = index_destination(lane.dst_root)
@@ -43,8 +45,6 @@ def plan_lrf_sync(lane: LrfLane, stable_seconds: int, now: float) -> List[Action
 def index_destination(dst_root: str) -> Dict[str, Existing]:
     """The newest copy of every LRF name found in any YYYYMM directory."""
     index: Dict[str, Existing] = {}
-    if not os.path.isdir(dst_root):
-        return index
     for _, month_path in month_dirs(dst_root):
         for name in list_dir(month_path):
             if not is_lrf_name(name):
@@ -72,7 +72,7 @@ def _chosen_source_by_name(paths: List[str], fallback: Set[str]) -> Dict[str, st
     for path in paths:
         try:
             mtime = os.stat(path).st_mtime
-        except FileNotFoundError:  # removed while scanning
+        except OSError:  # removed or unreadable; _plan_one reports it
             continue
         name = os.path.basename(path)
         rank = (path not in fallback, mtime)
@@ -86,7 +86,7 @@ def _plan_one(path: str, lane: LrfLane, existing: Dict[str, Existing], chosen: D
     name = os.path.basename(path)
     month = month_of_lrf_name(name)
     if month is None:
-        return Action(Kind.ERROR, path, reason="cannot derive a date from the file name")
+        return Action(Kind.ERROR, path, reason=UNDATED_LRF)
 
     try:
         stat = os.stat(path)

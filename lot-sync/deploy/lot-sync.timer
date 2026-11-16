@@ -1,0 +1,20 @@
+[Unit]
+Description=Run lot-sync 5 minutes after the previous pass ended
+# Deploy target: /etc/systemd/system/lot-sync.timer
+#
+# Rollout: run the service by hand first ('systemctl start lot-sync'), then
+# stop the old copy programs and 'systemctl enable --now lot-sync.timer'.
+
+[Timer]
+# OnBootSec is already in the past when the timer is enabled on a running
+# host, so the first pass starts at once; after a reboot, 5 minutes later.
+OnBootSec=5min
+# Counted from the end of the previous pass, like the daemon's --interval.
+# A timer never starts the service while a pass is still running, so passes
+# never overlap however long one takes.
+OnUnitInactiveSec=5min
+AccuracySec=30s
+Unit=lot-sync.service
+
+[Install]
+WantedBy=timers.target

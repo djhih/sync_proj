@@ -7,8 +7,9 @@
 - 路徑佔位符沿用 sync_proj 的其他文件:`/mnt/dst-fs` 是 WEKA、`/mnt/src-share` 是 SMB share,
   跑這支程式的主機稱為 sync-host。lot-id 與檔名都是虛構的範例。
 - 從 log 產生報告、還原腳本的工具與指令:[第 11 節](#11-從-log-產生報告與還原檔)
+- 部署主機上的檔案、wrapper、更新程式的方式、常駐(systemd timer):[第 12 節](#12-部署部署主機上的檔案)
 
-> 行號對應 2026-11-09 的程式碼(67 項測試通過)。改了程式請順手更新這份文件。
+> 行號對應 2026-11-16 的程式碼(75 項測試通過)。改了程式請順手更新這份文件。
 > 第 4.4 節與第 9 節的邊界情況,都在暫存目錄實際跑過;SIGTERM 的行為是讀程式碼推得的。
 > 文中用到的 Python 寫法(`@dataclass`、`raise … from`、`defaultdict`…)整理在[附錄](#附錄python-寫法小抄)。
 
@@ -71,17 +72,17 @@ cli.py                                  進入點:參數、常駐迴圈,把下�
 | --- | ---: | --- |
 | [timeslot.py](lot_sync/timeslot.py) | 41 | 月份規則:lot 名稱、`.lrf` 檔名 → `YYYYMM` |
 | [fileinfo.py](lot_sync/fileinfo.py) | 33 | 大小 + mtime(容差 2 秒)的比較;覆蓋紀錄的文字格式 |
-| [scan.py](lot_sync/scan.py) | 93 | 找 lot 資料夾、找 `.lrf`、算資料夾簽章。讀不到就丟 `ScanError` |
-| [plan.py](lot_sync/plan.py) | 35 | `Kind` 與 `Action` |
-| [folders.py](lot_sync/folders.py) | 103 | 規劃 lot 資料夾的同步 |
+| [scan.py](lot_sync/scan.py) | 95 | 找 lot 資料夾、找 `.lrf`、算資料夾簽章。讀不到就丟 `ScanError` |
+| [plan.py](lot_sync/plan.py) | 41 | `Kind` 與 `Action`;幾個共用的原因字串 |
+| [folders.py](lot_sync/folders.py) | 105 | 規劃 lot 資料夾的同步 |
 | [lrf.py](lot_sync/lrf.py) | 115 | 規劃 `.lrf` 檔的同步 |
 | [relocate.py](lot_sync/relocate.py) | 68 | 規劃「把放錯月份的項目搬到正確月份」 |
-| [executor.py](lot_sync/executor.py) | 138 | 執行 Action、dry-run、統計 `Report` |
+| [executor.py](lot_sync/executor.py) | 151 | 執行 Action、dry-run、統計 `Report` |
 | [problems.py](lot_sync/problems.py) | 16 | error log 去重 |
 | [rsync.py](lot_sync/rsync.py) | 45 | `rsync` 的薄包裝,可以換成測試替身 |
 | [state.py](lot_sync/state.py) | 64 | 狀態檔:已複製完的 lot 與它的來源、已報過的問題 |
 | [config.py](lot_sync/config.py) | 29 | `FolderLane`、`LrfLane`、`SyncConfig` |
-| [cli.py](lot_sync/cli.py) | 154 | 參數解析、串接、常駐迴圈、結束碼 |
+| [cli.py](lot_sync/cli.py) | 165 | 參數解析、串接、常駐迴圈、結束碼 |
 
 只用標準函式庫(Python ≥ 3.8);複製資料夾時才需要外部的 `rsync`。
 
@@ -104,13 +105,13 @@ python3 -m lot_sync --log-file … --error-log-file … sync --once --folder-src
       └─ Executor(dry_run, rsync, state, verify).run(兩串 Action 接起來) → Report
  6. Executor.run              逐個 _handle(action);最後 _remember_problems 存回 reported
  7. log "PASS | applied=… up_to_date=… skipped=… [原因: 數量, …] duplicates=… failed=…"
- 8. --once 或 --dry-run:Report.ok 就回 0,否則回 1
+ 8. --once 或 --dry-run:依 Report 回 0 / 3 / 4(見 6.3)
     常駐:_repeat 等 --interval 秒再從第 5 步開始,收到 SIGINT/SIGTERM 才停
 ```
 
 幾個容易忽略的點:
 
-- **兩條線全部規劃完,才開始執行**。規劃階段如果整個崩掉(見 [9.3](#93-錯誤處理的缺口)),
+- **兩條線全部規劃完,才開始執行**。規劃階段如果整個崩掉(見 [9.3](#93-錯誤處理)),
   這一輪什麼都不會做。
 - **`now` 只取一次**。同一輪裡每個項目的「是否還在寫入」都用同一個時間點判斷。
 - **規劃會讀狀態檔**(folders.py 用 `state.record_for`),但只有 executor 會寫。
@@ -208,7 +209,7 @@ python3 -m lot_sync --log-file … --error-log-file … sync --once --folder-src
 | `find_timeslot_dirs(root)` | 遞迴找所有 lot-id 資料夾 | **命中就不再往裡面找**:從 `dirnames` 移除,`os.walk` 就不會進去。所以不會走進 lot 裡面的幾十萬個檔案,lot 裡的 lot 也不會被找到 |
 | `find_lrf_files(root)` | 遞迴找所有 `.lrf`(不分大小寫) | 會走進 lot 資料夾裡面。結果排序過,後面的同分處理會用到這個順序 |
 | `month_dirs(root)` | `root` 底下**直接**的 `YYYYMM` 目錄 | 只看一層 |
-| `_iter_file_stats(root)` | 走過每個檔案,`os.lstat` | 用 `lstat`:symlink 算它自己,不跟過去。掃描途中被刪掉的檔案(`FileNotFoundError`)直接略過 |
+| `_iter_file_stats(root)` | 走過每個檔案,`os.lstat` | 用 `lstat`:symlink 算它自己,不跟過去。掃描途中被刪掉的檔案(`FileNotFoundError`)直接略過;**其他錯誤(權限、`EIO`…)丟 `ScanError`** |
 | `measure_tree(root)` | 算 `TreeSignature(files, bytes, newest_mtime)` | 見下 |
 | `file_infos(root)` | `{相對路徑: FileInfo}` | 用來比對目的地已有的檔案 |
 
@@ -219,7 +220,7 @@ python3 -m lot_sync --log-file … --error-log-file … sync --once --folder-src
 
 ### 3.4 規劃的輸出格式:`plan.py`
 
-`Kind`([:9](lot_sync/plan.py#L9))有七種:
+`Kind`([:15](lot_sync/plan.py#L15))有七種:
 
 | `Kind` | 意思 | 誰會產生 |
 | --- | --- | --- |
@@ -231,7 +232,11 @@ python3 -m lot_sync --log-file … --error-log-file … sync --once --folder-src
 | `DUPLICATE` | 同一個 lot-id 有兩個來源,需要人看 | folders |
 | `ERROR` | 規劃時就失敗(讀不到、檔名沒日期) | 三個都會 |
 
-`Action`([:20](lot_sync/plan.py#L20))是不可變的 dataclass:
+plan.py 也放幾個共用的原因字串:`UNDATED_LRF`、`MISSING_DESTINATION`,以及 `DATA_PROBLEMS`。
+`DATA_PROBLEMS` 是「資料本身有問題、要等人處理」的 `ERROR` 原因,目前只有檔名沒日期這一種。
+它們不算 I/O 失敗,所以不會讓結束碼變成 4(見 6.3)。
+
+`Action`([:26](lot_sync/plan.py#L26))是不可變的 dataclass:
 
 | 欄位 | 用途 |
 | --- | --- |
@@ -269,20 +274,23 @@ python3 -m lot_sync --log-file … --error-log-file … sync --once --folder-src
 
 **`plan_folder_sync(lane, state, stable_seconds, now)`**([:28](lot_sync/folders.py#L28)):
 
-1. `find_timeslot_dirs(src_root)` 找出所有 lot-id 資料夾。讀不到 → 整條線只回一個 `ERROR`。
-2. `_destination_of`([:48](lot_sync/folders.py#L48))算每個來源的目的地:
+1. **目的地根目錄不存在 → 整條線只回一個 `ERROR`**(`destination root does not exist; is the share mounted?`)。
+   share 沒掛載時,掛載點只是本機的空目錄,`<dst_root>` 這層會不存在。
+   以前會照常規劃,再由 executor 把資料寫進本機硬碟。
+2. `find_timeslot_dirs(src_root)` 找出所有 lot-id 資料夾。讀不到 → 整條線只回一個 `ERROR`。
+3. `_destination_of`([:50](lot_sync/folders.py#L50))算每個來源的目的地:
    `<dst_root>/<名稱的月份>/<名稱>`,只用資料夾**自己的名稱**,不帶上層路徑。
    `sendout_20261103/PE-test/EXP1/20261030-120000` → `202610/20261030-120000`。
-3. 建 `claimants`:「目的地 → 想要它的來源清單」。同一個目的地有兩個以上的來源,就是重複。
-4. 每個來源交給 `_plan_one`,`_others` 告訴它「還有誰也要這個目的地」。
+4. 建 `claimants`:「目的地 → 想要它的來源清單」。同一個目的地有兩個以上的來源,就是重複。
+5. 每個來源交給 `_plan_one`,`_others` 告訴它「還有誰也要這個目的地」。
 
-**`_plan_one`**([:58](lot_sync/folders.py#L58))依序判斷,第一個成立的就是結果:
+**`_plan_one`**([:60](lot_sync/folders.py#L60))依序判斷,第一個成立的就是結果:
 
 ```
 名稱的日期不合法 ───────────────────────────► SKIP       "cannot derive a month from the folder name"
 這一輪還有別的來源是同一個 lot-id ──────────► DUPLICATE  "lot-id also found at: …"
 狀態檔說這個 lot 是從另一個來源同步的 ──────► DUPLICATE  "lot-id already synced from: …"
-measure_tree 讀不到 ────────────────────────► ERROR
+measure_tree 讀不到(某個檔案 lstat 失敗也算) ─► ERROR      只有這個 lot,其他 lot 照做
 來源沒有任何檔案 ───────────────────────────► SKIP       "no files yet"
 最新檔案離現在 < stable_seconds ────────────► SKIP       "still being written"
 狀態檔有紀錄(同一個來源),簽章相同 ───────► UP_TO_DATE
@@ -298,7 +306,7 @@ measure_tree 讀不到 ───────────────────
 - **沒有紀錄但目的地已存在**(舊程式複製的)不算衝突,而是當成 `COPY_TREE`:rsync 補齊後寫入紀錄,
   也就是「接管」它。第一次部署時,第一輪會對每個這樣的 lot 都跑一次。
 
-**`_plan_copy` / `_replacements`**([:85](lot_sync/folders.py#L85)、[:93](lot_sync/folders.py#L93)):
+**`_plan_copy` / `_replacements`**([:87](lot_sync/folders.py#L87)、[:95](lot_sync/folders.py#L95)):
 目的地已經存在時,用 `file_infos` 分別列出兩邊的檔案,把相同相對路徑、`is_replacement` 成立的,
 逐筆寫進 `notes`。
 
@@ -310,17 +318,19 @@ measure_tree 讀不到 ───────────────────
 
 **`plan_lrf_sync(lane, stable_seconds, now)`**([:30](lot_sync/lrf.py#L30)):
 
-1. `find_lrf_files(src_root)`:所有來源 `.lrf`。
-2. `index_destination(dst_root)`:目的地已有的 `.lrf`,依名稱建索引。
-3. `fallback`:哪些來源位在 fallback 目錄底下。
-4. `_chosen_source_by_name`:每個名稱挑出一個勝出的來源。
-5. 以上任何一步丟 `ScanError` 或 `OSError` → **整條線只回一個 `ERROR`**。
-6. 每個來源交給 `_plan_one`。
+1. 目的地根目錄不存在 → 整條線只回一個 `ERROR`,理由同 4.1。
+2. `find_lrf_files(src_root)`:所有來源 `.lrf`。
+3. `index_destination(dst_root)`:目的地已有的 `.lrf`,依名稱建索引。
+4. `fallback`:哪些來源位在 fallback 目錄底下。
+5. `_chosen_source_by_name`:每個名稱挑出一個勝出的來源。
+6. 2–5 任何一步丟 `ScanError` 或 `OSError` → **整條線只回一個 `ERROR`**。
+7. 每個來源交給 `_plan_one`。
 
-**`index_destination`**([:43](lot_sync/lrf.py#L43)):掃 `dst_root` 底下**每個 `YYYYMM` 目錄的直接子項目**,
+**`index_destination`**([:45](lot_sync/lrf.py#L45)):掃 `dst_root` 底下**每個 `YYYYMM` 目錄的直接子項目**,
 同一個名稱出現在好幾個月份時,留 mtime 最新的那份。
 
-- 目的地根目錄不存在 → 空索引(第一次跑)。
+- 以前目的地根目錄不存在時會回傳空索引,結果每個 `.lrf` 都變成「目的地沒有,要複製」。
+  現在根目錄不存在已經在第 1 步擋下,這裡不再有特例。
 - **索引不含根目錄本身,也不含月份目錄底下的子目錄**。後果見 [4.4](#44-兩條線看目的地的方式不一樣)。
 
 **`_under_any(path, root, dir_names)`**([:61](lot_sync/lrf.py#L61)):
@@ -341,6 +351,7 @@ measure_tree 讀不到 ───────────────────
 | 排名完全一樣(同 mtime) | 路徑排序在前的那份(`>` 是嚴格大於,先到先贏) |
 
 沒設 `--lrf-fallback-dir` 時,第一個元素全是 `True`,就只比 mtime。
+`stat` 不到的來源(被刪或讀不到)不參加比較;`_plan_one` 會再 `stat` 一次,讀不到就給它自己一個 `ERROR`。
 
 **`_plan_one`**([:84](lot_sync/lrf.py#L84)):
 
@@ -417,53 +428,59 @@ mtime 離現在 < stable_seconds ──────────────► S
 
 ### 5.1 `executor.py`
 
-**`Report`**([:16](lot_sync/executor.py#L16)):五個計數加上 `skip_reasons`(每種 SKIP 原因各幾個)。
+**`Report`**([:16](lot_sync/executor.py#L16)):五個計數、`io_failed`,加上 `skip_reasons`(每種 SKIP 原因各幾個)。
 
 - `ok`:`failed == 0 and duplicates == 0`。只要有重複的 lot,`ok` 就是 False。
+- `io_failed`:`failed` 裡屬於「讀、寫、複製、搬移失敗」的部分,也就是不在 `DATA_PROBLEMS` 裡的 `ERROR`,
+  加上 `_apply` 的失敗。它不出現在 `PASS` 摘要裡,只用來決定結束碼(6.3)。
 - `summary(dry_run)`:`PASS` 那一行。dry-run 時 `applied` 會改寫成 `would_apply`,避免誤會成真的做了。
   原因依字母排序。
 
-**`Executor.run`**([:49](lot_sync/executor.py#L49)):建一個 `ProblemLog`,逐個 `_handle`,最後 `_remember_problems`。
+**`Executor.run`**([:59](lot_sync/executor.py#L59)):建一個 `ProblemLog`,逐個 `_handle`,最後 `_remember_problems`。
 
-**`_handle`**([:64](lot_sync/executor.py#L64)) 依種類分派:
+**`_handle`**([:74](lot_sync/executor.py#L74)) 依種類分派:
 
 | `Kind` | 計入 | log |
 | --- | --- | --- |
 | `UP_TO_DATE` | `up_to_date` | DEBUG(只有 `--verbose` 看得到,dry-run 也一樣) |
 | `SKIP` | `skipped`、`skip_reasons[reason]` | dry-run 是 INFO,正式是 DEBUG |
 | `DUPLICATE` | `duplicates` | ERROR `DUPLICATE LOT \| …`,經過 ProblemLog |
-| `ERROR` | `failed` | ERROR `PLAN FAILED \| …`,經過 ProblemLog |
+| `ERROR` | `failed`;原因不在 `DATA_PROBLEMS` 裡的也計入 `io_failed` | ERROR `PLAN FAILED \| …`,經過 ProblemLog |
 | 其他三種,dry-run | `applied` | INFO `DRY-RUN \| …`,加上每筆 `DRY-RUN REPLACE \| …` |
 | 其他三種,正式 | 交給 `_apply` | 見下 |
 
-**`_apply`**([:86](lot_sync/executor.py#L86)):
+**`_apply`**([:98](lot_sync/executor.py#L98)):
 
 1. log `START | …`。
 2. **先**把 `notes` 逐筆 log 成 `REPLACING | …`。先記再做,複製到一半掛掉也留得下紀錄。
 3. 呼叫對應的 `_copy_tree` / `_copy_file` / `_move`。
 4. 成功 → `applied += 1`、log `DONE | …`。
-   丟 `OSError` 或 `RsyncError` → `failed += 1`、經過 ProblemLog 記 `FAILED | …: <錯誤>`
+   丟 `OSError` 或 `RsyncError` → `failed` 和 `io_failed` 各加 1、經過 ProblemLog 記 `FAILED | …: <錯誤>`
    (key 是 `FAILED|<來源>`,不含錯誤訊息)。**單一動作失敗不會中斷這一輪**,下一個動作照做。
 
-**`_copy_tree`**([:109](lot_sync/executor.py#L109)):
+**`_copy_tree`**([:122](lot_sync/executor.py#L122)):
 
 ```
 目的地已存在?
   是 → staging = 目的地本身(原地更新:補晚到的檔案、接續上次中斷的)
   否 → staging = 同一層的 .<名稱>.partial(partial_path)
-makedirs(月份目錄)              ← 月份目錄到這裡才建,所以不會有空的月份目錄
+make_month_dir(月份目錄)        ← 月份目錄到這裡才建,所以不會有空的月份目錄
 rsync.copy_tree(src, staging)   ← rsync -a -u --no-owner --no-group src/ staging/
 rsync.verify_tree(src, staging) ← 除非 --no-verify
 staging 不是目的地 → os.rename(staging, 目的地)
 state.mark_done(目的地, src, 規劃時的簽章);state.save()
 ```
 
+- **`make_month_dir` 只建 `YYYYMM` 這一層**(`os.mkdir`,不是 `os.makedirs`)。三種動作的目的地都是
+  `<根目錄>/<YYYYMM>/<名稱>`,所以一層就夠。規劃之後 share 才斷線的話,根目錄不見了,
+  `mkdir` 會失敗,這個動作變成 `FAILED`,不會在本機硬碟重建 `/mnt/…/SENDOUT/YYYYMM`。
+  rsync 也不會替目的地建上層目錄,所以已經存在的資料夾一樣是失敗。
 - **新資料夾整個一次出現**:先寫在 `.名稱.partial`,驗證通過才 rename。讀目的地的人看不到寫一半的新資料夾。
 - **失敗時不清掉 `.partial`**。下一輪會 rsync 進同一個 `.partial`,接著做,不必從頭來。
 - **每複製完一個 lot 就存一次狀態檔**。中途被殺掉的話,已完成的 lot 不會重做。
 - 簽章用的是規劃時量的。複製途中來源又有新檔案的話,下一輪簽章不同,會再補一次。
 
-**`_copy_file`**([:123](lot_sync/executor.py#L123)):
+**`_copy_file`**([:136](lot_sync/executor.py#L136)):
 
 - `shutil.copy2` 複製到 `.<名稱>.partial`,再用 `os.replace` 換成正式名稱。
   `os.replace` 在同一個檔案系統內是原子的,覆蓋舊檔也是。
@@ -472,10 +489,10 @@ state.mark_done(目的地, src, 規劃時的簽章);state.save()
 - 暫存檔名以 `.partial` 結尾,不會被 `index_destination` 誤認成 `.lrf`。
 - `finally` 會清掉失敗留下的暫存檔(成功的話它已經被 rename 走了)。
 
-**`_move`**([:134](lot_sync/executor.py#L134)):目標存在就丟 `FileExistsError`(規劃後到執行前這段時間被別人建了),
+**`_move`**([:147](lot_sync/executor.py#L147)):目標存在就丟 `FileExistsError`(規劃後到執行前這段時間被別人建了),
 否則建月份目錄,再 `os.rename`。
 
-**`_remember_problems`**([:58](lot_sync/executor.py#L58)):正式執行、而且這一輪的問題集合跟上次不同,
+**`_remember_problems`**([:68](lot_sync/executor.py#L68)):正式執行、而且這一輪的問題集合跟上次不同,
 才把 `state.reported` 換成這一輪的集合並存檔。dry-run 和 relocate(沒有 state)都不存。
 
 ### 5.2 error log 去重:`problems.py`
@@ -568,33 +585,42 @@ python3 -m lot_sync [--log-file F] [--error-log-file F] [--verbose]  sync     [s
 
 ### 6.2 函式
 
-- **`configure_logging`**([:63](lot_sync/cli.py#L63)):一律寫到 stderr(在 systemd 底下會進 journal),
+- **`configure_logging`**([:74](lot_sync/cli.py#L74)):一律寫到 stderr(在 systemd 底下會進 journal),
   有給就再寫到 `--log-file`,以及一個只收 ERROR 的 `--error-log-file`。格式沿用舊程式的
   `時間 | 等級 | 訊息`,以前的 grep 習慣還能用。
-- **`sync_config_from`**([:76](lot_sync/cli.py#L76)):把參數變成 `SyncConfig`,有問題就 `parser.error`(結束碼 2):
-  - 一條線的兩個路徑只給了一個(`_lane`,[:98](lot_sync/cli.py#L98))。
+- **`sync_config_from`**([:87](lot_sync/cli.py#L87)):把參數變成 `SyncConfig`,有問題就 `parser.error`(結束碼 2):
+  - 一條線的兩個路徑只給了一個(`_lane`,[:109](lot_sync/cli.py#L109))。
   - 兩條線都沒給。
   - 有 `--lrf-fallback-dir` 但沒開 LRF 線;或名稱是空字串、`.`、`..`、含 `/`。
   - 開了資料夾線、不是 dry-run,卻找不到 rsync。
-- **`run_sync_pass`**([:106](lot_sync/cli.py#L106)):一輪,見第 2 節。
-- **`run_sync`**([:119](lot_sync/cli.py#L119)):載入狀態、建 `Rsync`;`--once` 或 `--dry-run` 跑一輪就回傳;
+- **`run_sync_pass`**([:117](lot_sync/cli.py#L117)):一輪,見第 2 節。
+- **`exit_code`**:把 `Report` 換成結束碼,見 6.3。
+- **`run_sync`**([:130](lot_sync/cli.py#L130)):載入狀態、建 `Rsync`;`--once` 或 `--dry-run` 跑一輪就回傳 `exit_code`;
   否則交給 `_repeat`。
-- **`_repeat`**([:130](lot_sync/cli.py#L130)):SIGINT / SIGTERM 的處理只是 `stop.set()`;
+- **`_repeat`**([:141](lot_sync/cli.py#L141)):SIGINT / SIGTERM 的處理只是 `stop.set()`;
   `stop.wait(interval)` 等待時收到訊號會立刻醒來。**這一輪做到一半收到訊號,會做完這一輪才停**,
-  見 [9.3](#93-錯誤處理的缺口)。
-- **`run_relocate`**([:139](lot_sync/cli.py#L139)):`Executor(dry_run=…)` 不帶 rsync、不帶 state,
+  見 [9.3](#93-錯誤處理)。建議的常駐方式不用這個模式,而是 systemd timer 每次跑 `--once`(12.5)。
+- **`run_relocate`**([:150](lot_sync/cli.py#L150)):`Executor(dry_run=…)` 不帶 rsync、不帶 state,
   印 `RELOCATE | …`。
-- **`main`**([:148](lot_sync/cli.py#L148)):解析、設 log、分派子指令。
+- **`main`**([:159](lot_sync/cli.py#L159)):解析、設 log、分派子指令。
 
 ### 6.3 結束碼
 
-| 結束碼 | 什麼時候 |
-| --- | --- |
-| 0 | `--once` / `--dry-run` / `relocate`:沒有 failed 也沒有 duplicates;常駐模式收到訊號正常結束 |
-| 1 | 有任何 failed 或 duplicates(**只要目的地還有沒處理的重複 lot,`--once` 就一定是 1**);或沒被接住的例外(會印 traceback) |
-| 2 | 參數錯誤(`parser.error`),包括找不到 rsync |
+`--once`、`--dry-run`、`relocate` 結束時依 `Report` 決定(`exit_code`,常數 `EXIT_*` 在 cli.py 開頭):
 
-`systemctl status` 對結束碼 1 會顯示 `failed`。判斷一輪有沒有問題,要看 `PASS` 那一行的 `failed=`,不是看結束碼。
+| 結束碼 | 什麼時候 | systemd(12.5 的 unit) |
+| --- | --- | --- |
+| 0 | 沒有 failed 也沒有 duplicates;常駐模式收到訊號正常結束 | 成功 |
+| 3 | 跑完了,但還有要人處理的:重複的 lot,或檔名沒日期的 `.lrf`。**只要還有沒處理的重複,平常就是 3** | 成功(`SuccessExitStatus=3`) |
+| 4 | 有東西讀不到、寫不進去、複製或搬移失敗;包括目的地根目錄不存在。下一輪會重試 | `failed` |
+| 1 | 沒被接住的例外,會印 traceback(Python 自己的結束碼);wrapper 拒絕執行(沒掛載) | `failed` |
+| 2 | 參數錯誤(`parser.error`),包括找不到 rsync | `failed` |
+| 75 | wrapper 拿不到鎖:另一次執行還沒結束 | `failed` |
+
+4 比 3 優先:同一輪有重複、也有複製失敗,結束碼是 4。
+
+**2026-11-16 以前**,有 failed 或 duplicates 一律回 1,跟 crash 分不出來。
+所以那時用 `systemd-run` 跑的單次執行會顯示 `failed`。
 
 ---
 
@@ -629,7 +655,8 @@ python3 -m lot_sync [--log-file F] [--error-log-file F] [--verbose]  sync     [s
 | `lot-id already synced from: …` | DUPLICATE | folders | 狀態檔說擁有者是別的來源 |
 | `no files yet` | SKIP | folders | 來源資料夾是空的 |
 | `still being written` | SKIP | folders、lrf | 最新的 mtime 太近 |
-| `cannot derive a date from the file name` | ERROR | lrf | `.lrf` 檔名沒有合法日期 |
+| `cannot derive a date from the file name` | ERROR | lrf | `.lrf` 檔名沒有合法日期。屬於 `DATA_PROBLEMS`,不算 I/O 失敗 |
+| `destination root does not exist; is the share mounted?` | ERROR | folders、lrf | 目的地根目錄不存在,整條線不做 |
 | `removed while planning` | SKIP | lrf | 規劃途中檔案被刪 |
 | `same name exists outside a fallback directory` | SKIP | lrf | 自己在 fallback 目錄裡,外面有同名的原始檔 |
 | `a newer source with the same name exists` | SKIP | lrf | 同名的另一個來源勝出 |
@@ -665,27 +692,28 @@ PASS | would_apply=400 up_to_date=500 skipped=100 [a newer source with the same 
 ## 8. 測試
 
 ```bash
-cd sendout/lot-sync && python3 -m pytest -q     # 67 passed
+cd sendout/lot-sync && python3 -m pytest -q     # 75 passed
 ```
 
 - 全部用 pytest 的 `tmp_path` 暫存目錄。[tests/helpers.py](tests/helpers.py) 的 `write()` 建檔時可以指定 mtime,
   預設是一小時前(`OLD`),剛好超過「還在寫入」的門檻。
+- 目的地根目錄一律用 `destination_root(tmp_path)` 建立,跟真正部署時一樣「根目錄已經存在」。
 - `FakeRsync` 用 `shutil.copytree` 代替 rsync,可以設定成「一定失敗」;[tests/test_rsync.py](tests/test_rsync.py)
   則用假的 `runner` 檢查組出來的 rsync 指令。
 
 | 測試檔 | 涵蓋 |
 | --- | --- |
 | [test_timeslot.py](tests/test_timeslot.py) | 名稱 → 月份,不存在的日期 |
-| [test_folders.py](tests/test_folders.py) | 月份與目的地、空資料夾、寫入中、簽章相同就不動、兩種重複、接管舊程式的目的地、覆蓋清單 |
-| [test_lrf.py](tests/test_lrf.py) | 月份取自檔名、原地更新、目的地較新不動、同名只取最新、沒日期是錯誤、規劃不建目錄、fallback 目錄 7 項 |
+| [test_folders.py](tests/test_folders.py) | 月份與目的地、空資料夾、寫入中、簽章相同就不動、兩種重複、接管舊程式的目的地、覆蓋清單、目的地根目錄不存在、lot 裡有讀不到的檔案 |
+| [test_lrf.py](tests/test_lrf.py) | 月份取自檔名、原地更新、目的地較新不動、同名只取最新、沒日期是錯誤、規劃不建目錄、fallback 目錄 7 項、目的地根目錄不存在 |
 | [test_relocate.py](tests/test_relocate.py) | 搬到正確月份、根目錄的項目、目標存在不覆蓋、dry-run 不動 |
-| [test_executor.py](tests/test_executor.py) | 複製後記住、失敗不記住也不留正式資料夾、dry-run 不動、原地補齊、覆蓋紀錄、error log 去重、重啟後仍記得 |
+| [test_executor.py](tests/test_executor.py) | 複製後記住、失敗不記住也不留正式資料夾、dry-run 不動、原地補齊、覆蓋紀錄、error log 去重、重啟後仍記得、執行途中根目錄消失、`io_failed` 的計算 |
 | [test_rsync.py](tests/test_rsync.py) | 參數(有 `-u`、沒有 `--delete`)、額外參數的位置、失敗訊息、驗證的判斷 |
-| [test_cli.py](tests/test_cli.py) | `--lrf-fallback-dir` 的傳遞與拒絕 |
+| [test_cli.py](tests/test_cli.py) | `--lrf-fallback-dir` 的傳遞與拒絕;從 `main()` 跑一輪,檢查結束碼 0 / 3 / 4 |
 | [test_report.py](tests/test_report.py) | `tools/report.py` 讀得懂 Executor 實際寫出的 log:正式 sync、失敗與中斷、dry-run、relocate、TSV 格式 |
 
-**沒有測到的**:真正的 rsync 執行檔、SMB 掛載、`_repeat` 與訊號、`main()` 從頭到尾、`configure_logging`、
-壞掉的狀態檔。
+**沒有測到的**:真正的 rsync 執行檔、SMB 掛載、`_repeat` 與訊號、壞掉的狀態檔。
+wrapper 和 systemd unit 不在 pytest 裡;它們是用假的 `python3` / `mountpoint` 和 `systemd-analyze verify` 手動檢查的。
 
 ---
 
@@ -705,27 +733,31 @@ cd sendout/lot-sync && python3 -m pytest -q     # 67 passed
 ### 9.2 效能
 
 8. **循序處理**。一個很大的 lot 在跑 rsync 時,同一輪的其他項目都要等。
-   沒有單一項目的逾時(`subprocess.run` 沒設 timeout),只能用 `--rsync-arg=--timeout=…` 限制 rsync 本身。
+   沒有單一項目的逾時(`subprocess.run` 沒設 timeout)。12.5 的 unit 用 `--rsync-arg=--timeout=1800` 限制 rsync 本身,
+   整輪則由 `TimeoutStartSec=6h` 限制。
 9. **LRF 線每輪都把目的地的月份目錄全部列一次**,檔案多時在 SMB 上會慢。
 10. **第一輪會對每個「目的地已有、狀態檔沒記錄」的 lot** 做一次雙邊檔案清單比對、一次 rsync、一次驗證。
 
-### 9.3 錯誤處理的缺口
+### 9.3 錯誤處理
 
-以下是讀程式碼找到、並在暫存目錄重現過的行為。都還沒修。
+以下是讀程式碼找到、並在暫存目錄重現過的行為。11 已經修了;13、14 用部署方式避開;12 還沒修。
 
-11. **`_iter_file_stats` 只吞 `FileNotFoundError`**([scan.py:75](lot_sync/scan.py#L75))。
-    其他 `lstat` 錯誤(權限、SMB 斷線的 `EIO`…)不會變成 `ScanError`,folders.py 也接不住,
-    會從規劃階段一路丟出去:
-    - `--once`:印 traceback,結束碼 1。因為規劃還沒做完,**這一輪什麼都沒改**。
-    - 常駐:`_repeat` 沒有 `try`,**程式會直接結束**。要靠 systemd 的 `Restart=` 拉起來。
+11. **(2026-11-16 已修)讀不到的檔案、沒掛載的目的地**:
+    - 以前 `_iter_file_stats`([scan.py:75](lot_sync/scan.py#L75))只吞 `FileNotFoundError`,
+      其他 `lstat` 錯誤會從規劃階段一路丟出去:一個讀不到的檔案,整輪都不做;常駐模式則整個程式結束。
+      現在它變成 `ScanError`,只有那個 lot 是 `ERROR`。
+    - 以前 share 沒掛載時,程式會把資料寫進本機的掛載點目錄,還把 lot 記成已完成。
+      現在規劃時根目錄不存在就整條線 `ERROR`,執行時只建月份那一層(5.1),wrapper 和 unit 也各擋一次(12.2、12.5)。
 12. **LRF 目的地有一個 `stat` 不到的 `.lrf`**(例如斷掉的 symlink、SMB 錯誤),**整條 LRF 線這一輪就只剩一個 `ERROR`**。
     這個 `ERROR` 的來源欄寫的是 `--lrf-src`,真正出問題的目的地檔案在原因裡。
-13. **常駐模式收到 SIGTERM 不會馬上停**:訊號處理只設旗標,`Executor.run` 不會在動作之間檢查它,
+13. **內建常駐模式(不加 `--once`)收到 SIGTERM 不會馬上停**:訊號處理只設旗標,`Executor.run` 不會在動作之間檢查它,
     所以會把這一輪做完。如果 systemd 也把 SIGTERM 送給正在跑的 rsync,那個動作會變成 `FAILED`,
     其餘動作繼續做;systemd 預設 90 秒後送 SIGKILL。新資料夾因為有 `.partial` 不會壞,
     原地更新中的資料夾可能停在一半,下一輪會補齊。`--once` 沒有裝訊號處理,收到 SIGTERM 就直接結束。
-14. **log 檔不會自己輪替**。`logging.FileHandler` 一直開著同一個檔案;用 logrotate 時要設 `copytruncate`,
-    不然 rotate 之後還是寫進舊檔。
+    **12.5 的 timer 每次跑 `--once`,所以不受影響**。
+14. **log 檔不會自己輪替**。內建常駐模式的 `logging.FileHandler` 一直開著同一個檔案。
+    timer 每輪都是新的行程、重新開檔,所以沒問題;[deploy/lot-sync.logrotate](deploy/lot-sync.logrotate)
+    用 `copytruncate` 是為了讓檔案永遠存在(unit 的 `ReadWritePaths=` 需要它)。
 
 ### 9.4 其他
 
@@ -737,6 +769,7 @@ cd sendout/lot-sync && python3 -m pytest -q     # 67 passed
     - sync-host 的真實資料跑過 `sync` 與 `relocate` 的 dry-run,規劃層的結果都對得上。
     - `relocate --apply` 已經在 sync-host 正式執行,沒有失敗。
     - `sync` 在 2026-11-08 夜間第一次正式執行(`--once`,當時舊程式也還在跑),結果還在整理。
+    - systemd timer(12.5)還沒在 sync-host 上跑過。
 
 ---
 
@@ -747,6 +780,8 @@ cd sendout/lot-sync && python3 -m pytest -q     # 67 passed
 - **新的 SKIP 原因會直接出現在 `PASS` 摘要的 `[…]` 裡**。原因字串要短、穩定、不帶會變動的內容。
   它也是 `problem_key` 的一部分,改字串會讓已經報過的問題再報一次。
 - **每條新規則都寫一個測試**,先確認拿掉新程式碼時測試會失敗。
+- **新的 `ERROR` 原因如果是「資料本身的問題、要等人處理」**,加進 plan.py 的 `DATA_PROBLEMS`,
+  不然它會讓結束碼變成 4、systemd 顯示 `failed`。
 - **改了 log 的格式**(`LOG_FORMAT`、`Action.describe()`、log 前綴),要一起改 [tools/report.py](tools/report.py)。
   [tests/test_report.py](tests/test_report.py) 會失敗提醒你。
 - **範例只用佔位符**:文件、測試、註解裡的主機名、路徑、share 名稱、lot-id 都用虛構的值。
@@ -814,6 +849,7 @@ python3 tools/report.py <一次執行的 log> <輸出.tsv>
 | 執行時順便存一份(最簡單) | `… 2>&1 \| tee ~/<名稱>.log` | 手動跑的 dry-run、relocate |
 | 從累積的 log 抽出最後一次 | `tac /var/log/lot-sync.log \| sed '/LRF FALLBACK DIRS/q' \| tac > ~/lot-sync-first.log` | 有給 `--lrf-fallback-dir` 的 sync。每次執行都以一行 `LRF FALLBACK DIRS` 開頭。**要在下一次執行之前抽** |
 | 從 journal 抽 | `journalctl -u lot-sync-first -o cat > ~/lot-sync-first.log` | 用 `systemd-run --unit=…` 跑的。journald 預設每 30 秒最多收 10000 行,超過的會被丟掉 |
+| timer 跑的最近一輪 | `journalctl -u lot-sync -o cat \| tac \| sed '/LRF FALLBACK DIRS/q' \| tac > ~/last-pass.log` | 12.5 的常駐。journal 裡每一輪都以 `LRF FALLBACK DIRS` 開頭;夾在中間的 systemd 訊息 report.py 會略過 |
 
 stderr 和 `--log-file` 寫的內容一樣,所以 tee 存下來的跟 log 檔裡的那一段相同。
 `tac` 是倒過來的 `cat`:從檔尾往上讀,讀到第一行 `LRF FALLBACK DIRS`(也就是最後一次執行的開頭)就停,再倒回來。
@@ -840,7 +876,7 @@ stderr 和 `--log-file` 寫的內容一樣,所以 tee 存下來的跟 log 檔裡
 
 ### 11.4 指令
 
-`lot-sync-run.sh` 代表部署時包好路徑參數(來源、目的、log、狀態檔)的 wrapper,
+`lot-sync-run.sh` 是包好路徑參數的 wrapper(見第 12 節),
 `~/lot-sync-report.py` 是 11.1 的工具。
 
 **A. 正式 sync 之前:備份會被覆蓋的檔案**
@@ -942,6 +978,190 @@ done
 ```bash
 grep '^DIFF' ~/relocate-conflicts-cmp.txt | while IFS=$'\t' read -r _ a b; do sudo stat -c '%s B  %y  %n' "$a" "$b"; echo; done
 ```
+
+---
+
+## 12. 部署:部署主機上的檔案
+
+### 12.1 一覽
+
+| 位置 | 是什麼 | 在 repo 裡 |
+| --- | --- | --- |
+| `/opt/lot-sync/` | 實際執行的程式,root 擁有 | 是,就是 `lot-sync/` 整個目錄 |
+| `/usr/local/sbin/lot-sync-run.sh` | wrapper,帶好所有路徑 | 範本是 [deploy/lot-sync-run.sh.example](deploy/lot-sync-run.sh.example);真實路徑只在部署主機上 |
+| `/etc/systemd/system/lot-sync.service`、`lot-sync.timer` | 常駐,見 12.5 | [deploy/](deploy/);service 裡的路徑要換成真實的 |
+| `/etc/logrotate.d/lot-sync` | log 輪替 | [deploy/lot-sync.logrotate](deploy/lot-sync.logrotate) |
+| `/run/lock/lot-sync.lock` | wrapper 的鎖,一次只能有一個執行 | 不放,wrapper 產生的 |
+| `/var/log/lot-sync.log`、`/var/log/lot-sync.error.log` | log | 不放,程式產生的 |
+| `/var/lib/lot-sync/state.json` | 狀態檔 | 不放,程式產生的 |
+| `~/sync_proj/lot-sync/` | 從 GitHub 複製下來的工作副本,用來更新 `/opt/lot-sync` | 是 |
+| `~/lot-sync-report.py` | 報告工具 | 是,[tools/report.py](tools/report.py) |
+| `~/relocate-undo.sh` 和其他 `.log` / `.tsv` / `.txt` | 一次性的報告與還原檔,見 11.3 | 不放,裡面全是真實路徑 |
+
+**為什麼程式放在 `/opt`、wrapper 放在 `/usr/local/sbin`**:
+
+- 程式以 root 執行,root 不能執行一般使用者改得到的程式碼。
+- `sudo` 會把 `HOME` 換成 `/root`,所以 `~/…` 的路徑在 sudo 底下會指到別的地方。
+
+### 12.2 wrapper
+
+所有指令都經過 wrapper,所以路徑、log、狀態檔每次都一樣,也不會打錯。
+真實路徑只寫在安裝好的那一份裡,repo 只放範本。
+
+範本 [deploy/lot-sync-run.sh.example](deploy/lot-sync-run.sh.example) 由上到下:
+
+1. **路徑變數**:`FOLDER_SRC`、`FOLDER_DST`、`LRF_SRC`、`LRF_DST`、`STATE`、`LOGDIR`、`APP_DIR`。
+2. **`LRF_FALLBACK_DIRS`**:內建 `--lrf-fallback-dir`,不必每次手動加。
+   萬一忘了加,加工版就會蓋掉原始檔(見 4.2)。
+   手動再加一次也沒關係,重複的參數不影響結果,只是 `LRF FALLBACK DIRS` 那行會重複印。
+3. **`REQUIRED_MOUNTS`**:這些路徑不是掛載點就直接結束(結束碼 1)。
+   share 沒掛載時,目的地看起來就是一個本機的空目錄。舊版程式會把資料寫進本機硬碟,
+   還把 lot 記成已完成,重新掛載後就不會再補。這個檢查在每次執行開始時做;
+   執行途中才斷線的情況,由程式本身處理(5.1 的 `make_month_dir`)。
+4. **`cd "$APP_DIR"`**:`python3 -m lot_sync` 要在套件所在的目錄執行。
+5. **鎖(`LOCK`、`flock`)**:同一時間只能有一次執行,不管是 timer 跑的、手動跑的、還是 relocate。
+   兩次 sync 同時跑,會重複複製同一個 lot,狀態檔也會互相覆蓋;sync 和 `relocate --apply` 同時跑,
+   sync 可能把檔案寫回剛被搬走的位置。
+   - `exec 9>"$LOCK"` 打開鎖檔,`flock -n 9` 試著鎖住它;已經被鎖就印出原因,以結束碼 75 結束。
+   - 鎖跟著檔案描述子 9 走。後面的 `exec python3` 會繼承它(rsync 也是),所以整次執行結束才會放開。
+   - dry-run 也要拿鎖。它不會寫東西,但這樣規則比較單純;被擋下時等一下再跑就好。
+6. **`common`**:`--log-file`、`--error-log-file` 是全域選項,必須放在子指令前面,所以由 wrapper 放。
+   `--verbose` 也是全域選項,所以只能當 wrapper 的第一個參數:`lot-sync-run.sh --verbose sync …`。
+7. **`exec`**:讓 python 取代 bash 成為主行程。這樣 systemd 的訊號會直接送到 python,結束碼也直接是 python 的。
+8. **`case`**:`sync` 帶上兩條線的路徑和狀態檔;`relocate` 只需要目的地。其他參數(`"$@"`)接在後面。
+
+填值時,`REQUIRED_MOUNTS` 用 `findmnt -n -o TARGET -T <路徑>` 查出來源和目的地各自的掛載點。
+
+### 12.3 安裝或更新 wrapper
+
+```bash
+findmnt -n -o TARGET -T /mnt/dst-fs/DataSetB/SENDOUT            # 填進 REQUIRED_MOUNTS
+findmnt -n -o TARGET -T /mnt/src-share/OutDir/SENDOUT           # 印出 / 代表現在沒掛載
+cp ~/sync_proj/lot-sync/deploy/lot-sync-run.sh.example ~/lot-sync-run.new
+nano ~/lot-sync-run.new                                          # 路徑、fallback 目錄、掛載點換成真實的值
+bash -n ~/lot-sync-run.new && diff /usr/local/sbin/lot-sync-run.sh ~/lot-sync-run.new
+sudo install -m 755 -o root -g root ~/lot-sync-run.new /usr/local/sbin/lot-sync-run.sh
+sudo lot-sync-run.sh sync --dry-run 2>&1 | grep -m1 'LRF FALLBACK DIRS'     # 要印出 LRF_FALLBACK_DIRS 設的名稱
+rm ~/lot-sync-run.new
+```
+
+- `REQUIRED_MOUNTS` 要跟前兩行 `findmnt` 印出來的一致。
+- `install -m 755 -o root -g root` 一次做完複製、改擁有者、改權限,其他使用者改不到它。
+
+### 12.4 更新程式
+
+```bash
+C=<commit>                                                       # 要部署的 commit
+curl -fsSL -o ~/sync_proj.tgz https://github.com/djhih/sync_proj/archive/$C.tar.gz
+rm -rf ~/sync_proj.new && mkdir ~/sync_proj.new && tar xzf ~/sync_proj.tgz -C ~/sync_proj.new --strip-components=1
+diff -rq ~/sync_proj/lot-sync ~/sync_proj.new/lot-sync | grep -v __pycache__     # 這次會改到哪些檔案
+rsync -a --delete --exclude __pycache__ ~/sync_proj.new/lot-sync/ ~/sync_proj/lot-sync/
+
+sudo systemctl stop lot-sync.timer                                # 常駐之後才需要;等正在跑的那一輪結束
+systemctl is-active lot-sync.service                              # inactive 或 failed 才繼續
+sudo rsync -a --delete --chown=root:root --chmod=go-w --exclude __pycache__ ~/sync_proj/lot-sync/ /opt/lot-sync/
+cd /opt/lot-sync && python3 -m lot_sync sync --help | grep -A2 lrf-fallback-dir    # 抽查新選項有沒有到
+```
+
+- `--delete`:`/opt/lot-sync` 裡有、但工作副本已經沒有的檔案會被刪掉,兩邊保持一致。
+- `--chown=root:root --chmod=go-w`:裝進去的檔案一律是 root 的,其他人不能寫。
+- curl 連不到 GitHub 的話,照以前的方式逐檔複製到 `~/sync_proj/lot-sync/`,再做後面的 `sudo rsync`。
+- 常駐之後,換完要 `sudo systemctl start lot-sync.timer`。停 timer 不會打斷正在跑的那一輪,所以要等它結束再換。
+
+### 12.5 常駐:systemd timer
+
+**做法**:systemd timer 在上一輪結束 5 分鐘後,啟動一個 `Type=oneshot` 的 service;service 經過 wrapper 跑一次 `sync --once`。
+不用程式內建的常駐模式(不加 `--once`),原因是:
+
+| | timer + `--once` | 內建常駐模式 |
+| --- | --- | --- |
+| 掛載檢查 | wrapper 每一輪都做 | 只有啟動時做一次 |
+| 某一輪 crash | 這一輪 `failed`,5 分鐘後照常下一輪 | 整個程式結束,要靠 `Restart=` |
+| 停止 | 立刻停(`--once` 不攔 SIGTERM),新資料夾留在 `.partial`,下一輪接著做 | 要等這一輪做完(9.3 第 13 點) |
+| 兩輪重疊 | 不會:service 還在跑時,timer 不會再啟動它 | 不會(單一行程) |
+| 每一輪的結果 | `systemctl status lot-sync` 直接看得到 | 只看得到 `active` |
+| log 輪替 | 每輪重新開檔,一般 logrotate 就可以 | 要 `copytruncate` |
+
+ffds-sync 用的也是 timer + oneshot。
+
+**三個檔案**(都在 [deploy/](deploy/)):
+
+- **[lot-sync.service](deploy/lot-sync.service)**
+  - `RequiresMountsFor=`:來源和目的地都掛載了才會啟動。沒掛載時 unit 根本不會執行,原因寫在 `journalctl -u lot-sync`。
+  - `ExecStart=` 透過 wrapper 跑 `sync --once --rsync-arg=--timeout=1800`:rsync 30 分鐘沒有傳任何資料就放棄(rsync 的結束碼 30)。
+    這個動作算 `FAILED`,下一輪重試。路徑和 fallback 目錄都在 wrapper 裡。
+  - `SuccessExitStatus=3`:有重複 lot 是平常的狀態,不算失敗。所以 `failed` 只代表結束碼 1、2、4 或 75(6.3)。
+  - `TimeoutStartSec=6h`:整輪的上限。到了 systemd 會停掉整個 cgroup。
+  - 沒有 `Restart=`,timer 本來就會啟動下一輪。
+  - `CPUWeight`、`IOWeight`、`Nice`:讓出資源給這台機器上的其他工作。舊程式曾經佔很多 CPU。
+  - 沙盒:`ProtectSystem=strict` 讓整個檔案系統唯讀,只有 `ReadWritePaths=` 列出的可以寫,
+    也就是目的地、兩個 log 檔、`/run/lock`,加上 `StateDirectory=` 的 `/var/lib/lot-sync`。
+    **來源因此保證不會被寫到**。
+    `ReadWritePaths=` 列的路徑一定要存在,不然 unit 啟動失敗;share 沒掛載時目的地不存在,這也剛好多擋一層。
+- **[lot-sync.timer](deploy/lot-sync.timer)**
+  - `OnUnitInactiveSec=5min`:從上一輪**結束**開始算,跟內建常駐的 `--interval` 一樣。一輪跑很久也不會重疊。
+  - `OnBootSec=5min`:開機 5 分鐘後跑第一輪。在已經開機很久的主機上啟用時,這個時間點早就過了,所以會立刻跑第一輪。
+- **[lot-sync.logrotate](deploy/lot-sync.logrotate)**:每週輪替,保留 8 份。用 `copytruncate`,讓兩個 log 檔永遠存在。
+
+**安裝**(先做完 12.3 換 wrapper、12.4 換程式):
+
+```bash
+cd ~/sync_proj/lot-sync/deploy
+sed -e 's|/mnt/dst-fs/DataSetB/SENDOUT|<來源的真實路徑>|g' \
+    -e 's|/mnt/src-share/OutDir/SENDOUT|<目的地的真實路徑>|g' lot-sync.service > ~/lot-sync.service
+grep -nE 'dst-fs|src-share' ~/lot-sync.service                  # 要沒有輸出
+sudo install -m 644 ~/lot-sync.service /etc/systemd/system/lot-sync.service
+sudo install -m 644 lot-sync.timer     /etc/systemd/system/lot-sync.timer
+sudo install -m 644 lot-sync.logrotate /etc/logrotate.d/lot-sync
+sudo touch /var/log/lot-sync.log /var/log/lot-sync.error.log      # ReadWritePaths= 要求它們存在
+sudo systemctl daemon-reload
+sudo systemd-analyze verify /etc/systemd/system/lot-sync.service /etc/systemd/system/lot-sync.timer   # 要沒有輸出
+sudo logrotate -d /etc/logrotate.d/lot-sync 2>&1 | tail -3        # -d 只檢查,不輪替
+rm ~/lot-sync.service
+```
+
+**先手動跑一輪**(舊程式還開著也可以:舊程式遇到已存在的目的地只會跳過):
+
+```bash
+sudo systemctl start lot-sync.service      # 跑完才回到提示字元;不想等就加 --no-block
+systemctl status lot-sync.service --no-pager | head -6
+journalctl -u lot-sync -o cat | grep 'PASS |' | tail -1
+```
+
+`status` 顯示 `Active: inactive (dead)`、`status=3` 是正常的。如果是 `failed`,看
+`journalctl -u lot-sync -n 50 --no-pager`:沒掛載、拿不到鎖、traceback、`FAILED` 都會寫在那裡。
+
+**切換**:
+
+```bash
+sudo systemctl disable --now copy-folder.service copy-lrf.service
+sudo systemctl enable --now lot-sync.timer
+systemctl list-timers lot-sync.timer --no-pager                   # NEXT / LAST 有時間就是在跑了
+```
+
+切換之後,舊的 copy_lrf 這段期間放進錯月份的 `.lrf` 要再整理一次:照 11.4 D 跑 relocate,檔名換成新的,例如 `relocate-dryrun4.log`。
+wrapper 的鎖會讓它跟 timer 那一輪錯開。被擋下(結束碼 75)的話,等一下再跑就好。
+
+**回到舊程式**:
+
+```bash
+sudo systemctl disable --now lot-sync.timer
+sudo systemctl enable --now copy-folder.service copy-lrf.service
+```
+
+**平常怎麼看**:
+
+| 想知道 | 指令 |
+| --- | --- |
+| 最近一輪的結果 | `systemctl status lot-sync --no-pager \| head -6` |
+| 最近幾輪的摘要 | `journalctl -u lot-sync -o cat \| grep 'PASS \|' \| tail -5` |
+| 有沒有失敗的 | `systemctl is-failed lot-sync`:`failed` 才需要看 |
+| 下一輪什麼時候 | `systemctl list-timers lot-sync.timer --no-pager` |
+| 最近一輪的逐筆報告 | 11.2 的「timer 跑的最近一輪」,再交給 `~/lot-sync-report.py` |
+| 手動多跑一輪 | `sudo systemctl start lot-sync`(不要直接用 wrapper 跑 sync;鎖會擋,但用 systemctl 才會記在 journal) |
+| 暫停 | `sudo systemctl stop lot-sync.timer`,正在跑的那一輪會跑完;恢復用 `start` |
+
+`/var/log/lot-sync.log` 才是完整的紀錄。journal 有速率限制,一輪輸出很多行時可能會丟掉一些。
 
 ---
 

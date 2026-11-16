@@ -6,7 +6,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
-from .plan import Action, Kind
+from .plan import DATA_PROBLEMS, Action, Kind
 from .problems import ProblemLog
 from .rsync import Rsync, RsyncError
 from .state import SyncState
@@ -19,6 +19,7 @@ class Report:
     up_to_date: int = 0
     duplicates: int = 0
     failed: int = 0
+    io_failed: int = 0  # the part of `failed` that is a failed read, copy or move
     skip_reasons: Counter = field(default_factory=Counter)
 
     @property
@@ -31,6 +32,15 @@ class Report:
         return "{}={} up_to_date={} skipped={}{} duplicates={} failed={}".format(
             applied, self.applied, self.up_to_date, self.skipped,
             " [{}]".format(reasons) if reasons else "", self.duplicates, self.failed)
+
+
+def make_month_dir(path: str) -> None:
+    """Create the YYYYMM directory but never its parents. If the destination root is gone
+    (the share was unmounted), fail rather than write into the local mount-point directory."""
+    try:
+        os.mkdir(path)
+    except FileExistsError:
+        pass
 
 
 def partial_path(destination: str) -> str:
@@ -75,6 +85,8 @@ class Executor:
             problems.report(action.problem_key(), "DUPLICATE LOT | " + action.describe())
         elif action.kind is Kind.ERROR:
             report.failed += 1
+            if action.reason not in DATA_PROBLEMS:
+                report.io_failed += 1
             problems.report(action.problem_key(), "PLAN FAILED | " + action.describe())
         elif self._dry_run:
             report.applied += 1
@@ -95,6 +107,7 @@ class Executor:
             handlers[action.kind](action)
         except (OSError, RsyncError) as error:
             report.failed += 1
+            report.io_failed += 1
             problems.report("FAILED|" + action.src,
                             "FAILED | {}: {}".format(action.describe(), error))
         else:
@@ -111,7 +124,7 @@ class Executor:
         # A new folder is built aside and renamed, so readers never see half of it.
         # An existing one is brought up to date in place (late files, interrupted runs).
         staging = destination if os.path.isdir(destination) else partial_path(destination)
-        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        make_month_dir(os.path.dirname(destination))
         self._rsync.copy_tree(action.src, staging)
         if self._verify:
             self._rsync.verify_tree(action.src, staging)
@@ -123,7 +136,7 @@ class Executor:
     def _copy_file(self, action: Action) -> None:
         destination = action.dst
         staging = partial_path(destination)
-        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        make_month_dir(os.path.dirname(destination))
         try:
             shutil.copy2(action.src, staging)
             os.replace(staging, destination)
@@ -134,5 +147,5 @@ class Executor:
     def _move(self, action: Action) -> None:
         if os.path.lexists(action.dst):
             raise FileExistsError(action.dst)
-        os.makedirs(os.path.dirname(action.dst), exist_ok=True)
+        make_month_dir(os.path.dirname(action.dst))
         os.rename(action.src, action.dst)

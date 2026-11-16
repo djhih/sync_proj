@@ -5,6 +5,12 @@ from typing import Optional, Tuple
 
 from .scan import TreeSignature
 
+UNDATED_LRF = "cannot derive a date from the file name"
+MISSING_DESTINATION = "destination root does not exist; is the share mounted?"
+# ERROR reasons that describe the data, not a failure to read or write it. They wait
+# for a person and do not make a pass count as failed (see cli.exit_code).
+DATA_PROBLEMS = frozenset({UNDATED_LRF})
+
 
 class Kind(Enum):
     COPY_TREE = "COPY_TREE"

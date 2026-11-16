@@ -6,13 +6,13 @@ from lot_sync.executor import Executor
 from lot_sync.folders import plan_folder_sync
 from lot_sync.state import SyncState
 
-from helpers import NOW, OLD, FakeRsync, write
+from helpers import NOW, OLD, FakeRsync, destination_root, write
 
 
 def setup(tmp_path):
     write(str(tmp_path / "src" / "20260815-101010" / "a.bin"))
     state = SyncState.empty(str(tmp_path / "state.json"))
-    lane = FolderLane(str(tmp_path / "src"), str(tmp_path / "dst"))
+    lane = FolderLane(str(tmp_path / "src"), destination_root(tmp_path))
     return state, plan_folder_sync(lane, state, 60, NOW)
 
 
@@ -42,7 +42,7 @@ def test_dry_run_touches_nothing(tmp_path):
     report = Executor(True, rsync, state).run(plan)
 
     assert report.applied == 1 and rsync.copies == []
-    assert not (tmp_path / "dst").exists()
+    assert os.listdir(str(tmp_path / "dst")) == []
     assert not (tmp_path / "state.json").exists()
 
 
@@ -60,13 +60,13 @@ def test_duplicate_is_reported_and_makes_the_run_not_ok(tmp_path):
     write(str(tmp_path / "src" / "sendout_1" / "20261030-120000" / "a.bin"))
     write(str(tmp_path / "src" / "sendout_2" / "20261030-120000" / "a.bin"))
     state = SyncState.empty(str(tmp_path / "state.json"))
-    lane = FolderLane(str(tmp_path / "src"), str(tmp_path / "dst"))
+    lane = FolderLane(str(tmp_path / "src"), destination_root(tmp_path))
     rsync = FakeRsync()
 
     report = Executor(False, rsync, state).run(plan_folder_sync(lane, state, 60, NOW))
 
     assert report.duplicates == 2 and not report.ok
-    assert rsync.copies == [] and not (tmp_path / "dst").exists()
+    assert rsync.copies == [] and os.listdir(str(tmp_path / "dst")) == []
 
 
 def errors(caplog):
@@ -77,7 +77,7 @@ def test_overwrites_are_logged_before_and_in_dry_run(tmp_path, caplog):
     caplog.set_level(logging.INFO)
     state, plan = setup(tmp_path)
     write(str(tmp_path / "dst" / "202608" / "20260815-101010" / "a.bin"), "stale!", mtime=OLD - 1000)
-    plan = plan_folder_sync(FolderLane(str(tmp_path / "src"), str(tmp_path / "dst")), state, 60, NOW)
+    plan = plan_folder_sync(FolderLane(str(tmp_path / "src"), destination_root(tmp_path)), state, 60, NOW)
 
     Executor(True, FakeRsync(), state).run(plan)
     assert any("DRY-RUN REPLACE" in r.getMessage() for r in caplog.records)
@@ -91,7 +91,7 @@ def test_a_problem_is_logged_once_until_it_goes_away(tmp_path, caplog):
     write(str(tmp_path / "src" / "sendout_1" / "20261030-120000" / "a.bin"))
     write(str(tmp_path / "src" / "sendout_2" / "20261030-120000" / "a.bin"))
     state = SyncState.empty(str(tmp_path / "state.json"))
-    lane = FolderLane(str(tmp_path / "src"), str(tmp_path / "dst"))
+    lane = FolderLane(str(tmp_path / "src"), destination_root(tmp_path))
     duplicates = plan_folder_sync(lane, state, 60, NOW)
     executor = Executor(False, FakeRsync(), state)
 
@@ -112,7 +112,7 @@ def test_reported_problems_survive_a_restart(tmp_path):
     write(str(tmp_path / "src" / "sendout_1" / "20261030-120000" / "a.bin"))
     write(str(tmp_path / "src" / "sendout_2" / "20261030-120000" / "a.bin"))
     state = SyncState.empty(str(tmp_path / "state.json"))
-    lane = FolderLane(str(tmp_path / "src"), str(tmp_path / "dst"))
+    lane = FolderLane(str(tmp_path / "src"), destination_root(tmp_path))
     Executor(False, FakeRsync(), state).run(plan_folder_sync(lane, state, 60, NOW))
 
     assert len(SyncState.load(str(tmp_path / "state.json")).reported) == 2
@@ -122,7 +122,7 @@ def test_dry_run_shows_every_problem_and_remembers_nothing(tmp_path, caplog):
     write(str(tmp_path / "src" / "sendout_1" / "20261030-120000" / "a.bin"))
     write(str(tmp_path / "src" / "sendout_2" / "20261030-120000" / "a.bin"))
     state = SyncState.empty(str(tmp_path / "state.json"))
-    lane = FolderLane(str(tmp_path / "src"), str(tmp_path / "dst"))
+    lane = FolderLane(str(tmp_path / "src"), destination_root(tmp_path))
     plan = plan_folder_sync(lane, state, 60, NOW)
 
     Executor(True, FakeRsync(), state).run(plan)
@@ -137,7 +137,30 @@ def test_lrf_replacement_overwrites_the_file(tmp_path):
     write(str(tmp_path / "src" / name), "new content", mtime=OLD)
     old = write(str(tmp_path / "dst" / "202609" / name), "old", mtime=OLD - 1000)
 
-    report = Executor(False).run(plan_lrf_sync(LrfLane(str(tmp_path / "src"), str(tmp_path / "dst")), 60, NOW))
+    report = Executor(False).run(plan_lrf_sync(LrfLane(str(tmp_path / "src"), destination_root(tmp_path)), 60, NOW))
 
     assert report.ok and open(old).read() == "new content"
     assert not list((tmp_path / "dst" / "202609").glob(".*partial"))
+
+
+def test_a_destination_root_that_vanishes_fails_instead_of_writing_locally(tmp_path):
+    state, plan = setup(tmp_path)
+    os.rmdir(str(tmp_path / "dst"))  # the share was unmounted after planning
+    report = Executor(False, FakeRsync(), state).run(plan)
+
+    assert report.io_failed == 1
+    assert not (tmp_path / "dst").exists()
+    assert state.record_for(plan[0].dst) is None
+
+
+def test_io_failures_are_counted_apart_from_data_problems(tmp_path):
+    from lot_sync.config import LrfLane
+    from lot_sync.lrf import plan_lrf_sync
+    write(str(tmp_path / "src" / "summary.lrf"))  # undated: waits for a person
+    lane = LrfLane(str(tmp_path / "src"), destination_root(tmp_path))
+    report = Executor(False).run(plan_lrf_sync(lane, 60, NOW))
+    assert (report.failed, report.io_failed) == (1, 0)
+
+    state, plan = setup(tmp_path)
+    report = Executor(False, FakeRsync(fail_copy=True), state).run(plan)
+    assert (report.failed, report.io_failed) == (1, 1)

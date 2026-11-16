@@ -1,0 +1,15 @@
+# Deploy target: /etc/logrotate.d/lot-sync
+#
+# copytruncate keeps both files in place. lot-sync.service lists them in
+# ReadWritePaths=, and a missing file would stop the unit from starting.
+# Each pass opens the files anew, so at most a moment of output is lost.
+/var/log/lot-sync.log /var/log/lot-sync.error.log {
+    weekly
+    maxsize 64M
+    rotate 8
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+}

@@ -74,6 +74,8 @@ def _iter_file_stats(root: str) -> Iterator[Tuple[str, os.stat_result]]:
                 info = os.lstat(path)
             except FileNotFoundError:  # removed while scanning
                 continue
+            except OSError as error:  # unreadable: the measurement would be wrong
+                raise ScanError(str(error)) from error
             yield path, info
 
 
